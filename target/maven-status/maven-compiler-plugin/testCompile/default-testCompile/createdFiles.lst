@@ -1,0 +1,5 @@
+mrc\bench\CompressionBenchmark.class
+mrc\graph\CycleDetectorTest.class
+mrc\graph\TransitionGraphTest.class
+mrc\core\OperatorLibraryTest.class
+mrc\codec\RoundTripTest.class
