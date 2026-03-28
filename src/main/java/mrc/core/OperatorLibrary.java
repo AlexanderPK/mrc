@@ -20,7 +20,7 @@ public class OperatorLibrary {
     private final Map<Byte, Operator> byId;
     private final Map<String, Optional<Operator>> shortestCache;
 
-    private OperatorLibrary() {
+    protected OperatorLibrary() {
         this.allOperators = new ArrayList<>();
         this.byId = new HashMap<>();
         this.shortestCache = new HashMap<>();

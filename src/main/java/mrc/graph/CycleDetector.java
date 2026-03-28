@@ -1,6 +1,8 @@
 package mrc.graph;
 
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Detects all simple cycles in a TransitionGraph using Johnson's algorithm.
@@ -10,6 +12,9 @@ import java.util.*;
  * to identify cycle-bearing subgraphs.
  */
 public class CycleDetector {
+    private static final int MAX_CYCLES = 1_000_000;
+    private static final int N_THREADS = Runtime.getRuntime().availableProcessors();
+
     private final TransitionGraph graph;
     private final int maxCycleLength;
     private List<CyclePath> allCycles;
@@ -43,7 +48,7 @@ public class CycleDetector {
         }
 
         allCycles = new ArrayList<>();
-        Set<Set<Integer>> seenCycleNodeSets = new HashSet<>();
+        Set<Long> seenHashes = new HashSet<>();
 
         // Run Tarjan to find SCCs
         TarjanSCC tarjan = new TarjanSCC(graph);
@@ -52,13 +57,11 @@ public class CycleDetector {
         // For each SCC with more than one node, find cycles
         for (Set<Integer> scc : sccs) {
             if (scc.size() > 1) {
-                findCyclesInSCC(scc, seenCycleNodeSets, allCycles);
+                findCyclesInSCC(scc, seenHashes, allCycles);
             }
         }
 
-        // Sort by compression gain (descending)
-        allCycles.sort((a, b) -> Double.compare(b.compressionGain(), a.compressionGain()));
-
+        // allCycles is unsorted; topCycles() does partial top-K sort
         return allCycles;
     }
 
@@ -69,12 +72,48 @@ public class CycleDetector {
      * @param seenCycleNodeSets set of already-found cycle node sets (for deduplication)
      * @param allCycles list to accumulate found cycles
      */
-    private void findCyclesInSCC(Set<Integer> scc, Set<Set<Integer>> seenCycleNodeSets, List<CyclePath> allCycles) {
-        // For each starting node, do DFS to find cycles back to itself
-        for (int start : scc) {
-            List<Integer> path = new ArrayList<>();
-            path.add(start);
-            dfsForCycles(start, start, path, new ArrayList<>(), scc, seenCycleNodeSets, allCycles);
+    private void findCyclesInSCC(Set<Integer> scc, Set<Long> seenHashes, List<CyclePath> allCycles) {
+        List<Integer> startNodes = new ArrayList<>(scc);
+        int nBatches = Math.min(N_THREADS, startNodes.size());
+        AtomicInteger totalCount = new AtomicInteger(allCycles.size());
+
+        // Partition start nodes into nBatches groups — one task per thread
+        List<Future<List<CyclePath>>> futures = new ArrayList<>(nBatches);
+        ExecutorService pool = Executors.newFixedThreadPool(nBatches);
+        try {
+            int batchSize = (startNodes.size() + nBatches - 1) / nBatches;
+            for (int b = 0; b < nBatches; b++) {
+                int from = b * batchSize;
+                if (from >= startNodes.size()) break;
+                int to   = Math.min(from + batchSize, startNodes.size());
+                List<Integer> batch = startNodes.subList(from, to);
+                futures.add(pool.submit(() -> {
+                    List<CyclePath> localCycles = new ArrayList<>();
+                    Set<Long> localSeen = new HashSet<>();
+                    for (int start : batch) {
+                        if (totalCount.get() >= MAX_CYCLES) break;
+                        List<Integer> path = new ArrayList<>();
+                        path.add(start);
+                        dfsForCycles(start, start, path, new ArrayList<>(), scc, localSeen, localCycles, totalCount);
+                    }
+                    return localCycles;
+                }));
+            }
+
+            // Merge results with cross-batch deduplication (hash-based, no object allocation)
+            for (Future<List<CyclePath>> future : futures) {
+                for (CyclePath cycle : future.get()) {
+                    if (allCycles.size() >= MAX_CYCLES) return;
+                    if (seenHashes.add(nodeSetHash(cycle.nodes()))) {
+                        allCycles.add(cycle);
+                    }
+                }
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Cycle detection interrupted", e);
+        } finally {
+            pool.shutdownNow();
         }
     }
 
@@ -90,13 +129,15 @@ public class CycleDetector {
      * @param allCycles output list
      */
     private void dfsForCycles(int start, int current, List<Integer> path, List<TransitionEdge> pathEdges,
-                             Set<Integer> scc, Set<Set<Integer>> seenCycleNodeSets, List<CyclePath> allCycles) {
-        if (path.size() > maxCycleLength) {
-            return; // Exceeded max cycle length
+                             Set<Integer> scc, Set<Long> localSeen, List<CyclePath> localCycles,
+                             AtomicInteger totalCount) {
+        if (path.size() > maxCycleLength || totalCount.get() >= MAX_CYCLES) {
+            return;
         }
 
         List<TransitionEdge> outgoing = graph.edgesFrom(current);
         for (TransitionEdge edge : outgoing) {
+            if (totalCount.get() >= MAX_CYCLES) return;
             int next = edge.toNode();
 
             if (!scc.contains(next)) {
@@ -105,17 +146,19 @@ public class CycleDetector {
 
             if (next == start && path.size() > 1) {
                 // Found a cycle back to start
-                Set<Integer> cycleNodeSet = new HashSet<>(path);
-                if (!seenCycleNodeSets.contains(cycleNodeSet)) {
-                    seenCycleNodeSets.add(cycleNodeSet);
-                    CyclePath cycle = buildCyclePath(path, pathEdges, edge);
-                    allCycles.add(cycle);
+                if (localSeen.add(nodeSetHash(path))) {
+                    localCycles.add(buildCyclePath(path, pathEdges, edge));
+                    int count = totalCount.incrementAndGet();
+                    if (count % (MAX_CYCLES/10) == 0) {
+                        System.out.printf("[CycleDetector] %,d / %,d cycles found (%.1f%%)%n",
+                                count, MAX_CYCLES, 100.0 * count / MAX_CYCLES);
+                    }
                 }
             } else if (!path.contains(next) && path.size() < maxCycleLength) {
                 // Continue DFS - only if we haven't visited this node in this path
                 path.add(next);
                 pathEdges.add(edge);
-                dfsForCycles(start, next, path, pathEdges, scc, seenCycleNodeSets, allCycles);
+                dfsForCycles(start, next, path, pathEdges, scc, localSeen, localCycles, totalCount);
                 path.remove(path.size() - 1);
                 pathEdges.remove(pathEdges.size() - 1);
             }
@@ -150,7 +193,32 @@ public class CycleDetector {
      */
     public List<CyclePath> topCycles(int k) {
         List<CyclePath> all = findAllCycles();
-        return all.stream().limit(k).toList();
+        // Only consider cycles that actually save bits
+        // Partial sort: min-heap of size k keeps the k largest gains — O(n log k)
+        PriorityQueue<CyclePath> heap = new PriorityQueue<>(k,
+                Comparator.comparingDouble(CyclePath::compressionGain));
+        for (CyclePath c : all) {
+            if (c.compressionGain() <= 0) continue;
+            if (heap.size() < k) {
+                heap.offer(c);
+            } else if (c.compressionGain() > heap.peek().compressionGain()) {
+                heap.poll();
+                heap.offer(c);
+            }
+        }
+        List<CyclePath> result = new ArrayList<>(heap);
+        result.sort((a, b) -> Double.compare(b.compressionGain(), a.compressionGain()));
+        return result;
+    }
+
+    /** Order-independent hash of a node list — no object allocation. */
+    private static long nodeSetHash(List<Integer> nodes) {
+        long h = 0;
+        for (int n : nodes) {
+            // XOR with a position-independent mixing function
+            h ^= n * 0x9e3779b97f4a7c15L;
+        }
+        return h;
     }
 
     /**

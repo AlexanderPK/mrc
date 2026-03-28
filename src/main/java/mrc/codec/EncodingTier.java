@@ -30,7 +30,14 @@ public enum EncodingTier {
      * Flag: 110 (3 bits)
      * Payload: cycle index bits + 16-bit repeat count
      */
-    CYCLE(6, 3);
+    CYCLE(6, 3),
+
+    /**
+     * Arithmetic run encoding (v0x02 format only).
+     * Flag: 1 (1 bit)
+     * Payload: 8-bit stepIdx + 8-bit startVal + 16-bit runLen
+     */
+    ARITH_RUN(1, 1);
 
     private final int flagBits;
     private final int flagBitCount;

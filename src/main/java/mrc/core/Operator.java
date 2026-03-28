@@ -8,7 +8,7 @@ package mrc.core;
  * - An operand encoding cost (0 for Not, 3 for shifts, 8 for arithmetic)
  * - A functional implementation that applies to 8-bit values (masked to 0xFF)
  */
-public sealed interface Operator permits Add, Sub, Mul, Div, Mod, XorOp, AndOp, OrOp, ShiftLeft, ShiftRight, Not {
+public interface Operator {
 
     /**
      * Apply this operator to an 8-bit value.
@@ -31,6 +31,19 @@ public sealed interface Operator permits Add, Sub, Mul, Div, Mod, XorOp, AndOp, 
      * @return operand bits (0 for Not, 3 for shifts, 8 for arithmetic)
      */
     int operandBits();
+
+    /**
+     * Apply this operator with a context value (for binary operators).
+     *
+     * Default delegates to apply(x) — override for binary operators.
+     *
+     * @param x the input value (0..255)
+     * @param context a second input (e.g., the previous delta for delta-of-delta)
+     * @return the result masked to 0xFF
+     */
+    default int apply(int x, int context) {
+        return apply(x);
+    }
 
     /**
      * Get a human-readable expression for this operator.

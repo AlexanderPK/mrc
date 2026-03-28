@@ -4,6 +4,8 @@ import mrc.core.OperatorLibrary;
 import mrc.core.Transition;
 
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 
@@ -18,6 +20,7 @@ public class TransitionGraph {
     private final Map<Integer, List<TransitionEdge>> adjacency;
     private final long[][] frequencyMatrix;
     private final OperatorLibrary lib;
+    private Path exportDir;
 
     /**
      * Construct an empty TransitionGraph.
@@ -179,14 +182,93 @@ public class TransitionGraph {
     }
 
     /**
+     * Set the default directory for DOT exports.
+     *
+     * Used by the no-arg {@link #exportDot()} overload.
+     *
+     * @param dir the directory to write exported files into
+     */
+    public void setExportDir(Path dir) {
+        this.exportDir = dir;
+    }
+
+    /**
+     * Get the configured default export directory, or null if not set.
+     */
+    public Path getExportDir() {
+        return exportDir;
+    }
+
+    /**
+     * Export the graph to Graphviz DOT format using the configured export directory.
+     *
+     * The output file is named {@code mrc_graph.dot} inside the configured directory.
+     *
+     * @throws IOException if the write fails or no export directory has been configured
+     * @throws IllegalStateException if no export directory has been set via {@link #setExportDir(Path)}
+     */
+    public void exportDot() throws IOException {
+        if (exportDir == null) {
+            throw new IllegalStateException(
+                    "No export directory configured — call setExportDir(Path) first");
+        }
+        exportDot(exportDir.resolve("mrc_graph.dot"));
+    }
+
+    /**
      * Export the graph to Graphviz DOT format for visualization.
      *
-     * TODO: Implement DOT export.
+     * Only emits edges with positive weight (frequency * bits-saved > 0) to keep
+     * the output manageable — a full 256-node graph can have up to 65 K edges.
+     * Nodes are labelled with their hex value; edges carry the operator expression,
+     * cost in bits, and observation frequency. Edge thickness scales with frequency.
+     *
+     * Render with: {@code dot -Tsvg graph.dot -o graph.svg}
      *
      * @param outputPath the path where the .dot file will be written
      * @throws IOException if the write fails
      */
     public void exportDot(Path outputPath) throws IOException {
-        // TODO: Implement Graphviz DOT export
+        // Collect all positive-weight edges and the nodes they touch
+        List<TransitionEdge> edges = adjacency.values().stream()
+                .flatMap(List::stream)
+                .filter(e -> e.weight() > 0)
+                .sorted(Comparator.comparingDouble(TransitionEdge::weight).reversed())
+                .toList();
+
+        Set<Integer> usedNodes = new LinkedHashSet<>();
+        for (TransitionEdge e : edges) {
+            usedNodes.add(e.fromNode());
+            usedNodes.add(e.toNode());
+        }
+
+        // Max frequency for pen-width scaling (avoid division by zero)
+        long maxFreq = edges.stream().mapToLong(TransitionEdge::frequency).max().orElse(1L);
+
+        try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(outputPath))) {
+            w.println("digraph MRC {");
+            w.println("  graph [rankdir=LR fontname=\"Helvetica\" bgcolor=\"#ffffff\"];");
+            w.println("  node  [shape=circle style=filled fillcolor=\"#ddeeff\" "
+                    + "fontname=\"Helvetica\" fontsize=10];");
+            w.println("  edge  [fontname=\"Helvetica\" fontsize=8];");
+            w.println();
+
+            // Nodes
+            for (int node : usedNodes) {
+                w.printf("  n%d [label=\"0x%02X\"];%n", node, node);
+            }
+            w.println();
+
+            // Edges
+            for (TransitionEdge e : edges) {
+                double penWidth = 1.0 + 4.0 * e.frequency() / maxFreq;
+                String label = String.format("%s\\ncost=%db freq=%d",
+                        e.op().toExpression("x"), e.costBits(), e.frequency());
+                w.printf("  n%d -> n%d [label=\"%s\" penwidth=\"%.2f\"];%n",
+                        e.fromNode(), e.toNode(), label, penWidth);
+            }
+
+            w.println("}");
+        }
     }
 }
