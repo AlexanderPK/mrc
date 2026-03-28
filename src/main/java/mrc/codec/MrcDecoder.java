@@ -191,8 +191,11 @@ public class MrcDecoder {
             for (int j = 0; j < length; j++) {
                 byte opId = (byte) reader.readByte();
                 int operandBits = OpIdMap.getOperandBits(opId);
-                int dummyOperand = (opId == 8 || opId == 9) ? 1 : 0;
-                Operator op = lib.createOperator(opId, dummyOperand);
+                int operand = 0;
+                if (operandBits > 0) {
+                    operand = (int) reader.readBits(operandBits);
+                }
+                Operator op = lib.createOperator(opId, operand);
                 int costBits = 5 + operandBits;
                 TransitionEdge edge = new TransitionEdge(nodes.get(j),
                         nodes.get((j + 1) % length), op, costBits, 0, 0);

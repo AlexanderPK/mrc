@@ -18,13 +18,15 @@ public class OperatorLibrary {
 
     private final List<Operator> allOperators;
     private final Map<Byte, Operator> byId;
-    private final Map<String, Optional<Operator>> shortestCache;
+    private final Operator[][] transitionCache;  // [from][to] direct lookup cache (65KB)
 
     protected OperatorLibrary() {
         this.allOperators = new ArrayList<>();
         this.byId = new HashMap<>();
-        this.shortestCache = new HashMap<>();
+        this.transitionCache = new Operator[256][256];
         buildOperatorLibrary();
+        // Pre-compute all transitions for fast O(1) lookup
+        precomputeTransitions();
     }
 
     /**
@@ -191,29 +193,35 @@ public class OperatorLibrary {
      * @param to the target value (0..255)
      * @return Optional containing the cheapest operator, or empty if none exists
      */
-    public Optional<Operator> findShortest(int from, int to) {
-        String key = from + ":" + to;
+    /**
+     * Pre-compute the shortest operator for all 256x256 transitions.
+     * This is done once during initialization for O(1) lookup performance.
+     */
+    private void precomputeTransitions() {
+        for (int from = 0; from < 256; from++) {
+            for (int to = 0; to < 256; to++) {
+                Operator best = null;
+                int bestCost = Integer.MAX_VALUE;
 
-        if (shortestCache.containsKey(key)) {
-            return shortestCache.get(key);
-        }
-
-        Operator best = null;
-        int bestCost = Integer.MAX_VALUE;
-
-        for (Operator op : allOperators) {
-            int result = op.apply(from) & 0xFF;
-            if (result == (to & 0xFF)) {
-                int cost = 5 + op.operandBits();
-                if (cost < bestCost) {
-                    bestCost = cost;
-                    best = op;
+                for (Operator op : allOperators) {
+                    int result = op.apply(from) & 0xFF;
+                    if (result == to) {
+                        int cost = 5 + op.operandBits();
+                        if (cost < bestCost) {
+                            bestCost = cost;
+                            best = op;
+                        }
+                    }
                 }
+                transitionCache[from][to] = best;
             }
         }
+    }
 
-        Optional<Operator> result = Optional.ofNullable(best);
-        shortestCache.put(key, result);
-        return result;
+    public Optional<Operator> findShortest(int from, int to) {
+        from = from & 0xFF;
+        to = to & 0xFF;
+        Operator op = transitionCache[from][to];
+        return Optional.ofNullable(op);
     }
 }

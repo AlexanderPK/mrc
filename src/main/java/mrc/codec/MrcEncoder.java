@@ -102,6 +102,23 @@ public class MrcEncoder {
 
         for (int i = 0; i < input.length; i++) {
             int currentValue = input[i] & 0xFF;
+
+            // Try CYCLE tier first (if we have matching cycles and data to repeat)
+            CycleMatch cycleMatch = tryCycle(input, i, currentValue);
+            if (cycleMatch != null) {
+                int cycleIndex = findCycleIndex(cycleMatch.cycle);
+                if (cycleIndex >= 0) {
+                    writeCycleToken(writer, cycleIndex, cycleMatch.repeatCount);
+                    tierCounts.merge(EncodingTier.CYCLE, 1L, Long::sum);
+                    // Skip through the matched cycle data
+                    int cycleLen = cycleMatch.cycle.nodes().size();
+                    i += (cycleLen * cycleMatch.repeatCount) - 1;
+                    lastValue = input[Math.min(i, input.length - 1)] & 0xFF;
+                    continue;
+                }
+            }
+
+            // Fall back to RELATIONAL
             if (i > 0 && tryRelational(writer, lastValue, currentValue)) {
                 tierCounts.merge(EncodingTier.RELATIONAL, 1L, Long::sum);
             } else {
@@ -122,6 +139,96 @@ public class MrcEncoder {
         return new CompressionResult(input, compressed, originalBits, compressedBits,
                 ratio, 1.0 - ratio, tierCounts, new ArrayList<>(),
                 endTime - startTime, 0L);
+    }
+
+    /**
+     * Helper class to return cycle match results.
+     */
+    private static class CycleMatch {
+        final CyclePath cycle;
+        final int repeatCount;
+
+        CycleMatch(CyclePath cycle, int repeatCount) {
+            this.cycle = cycle;
+            this.repeatCount = repeatCount;
+        }
+    }
+
+    /**
+     * Try to match a repeating cycle starting at the given position.
+     *
+     * @param input the input data
+     * @param startPos current position in input
+     * @param currentValue the value at startPos
+     * @return a CycleMatch if a cycle matches and repeats at least once, or null
+     */
+    private CycleMatch tryCycle(byte[] input, int startPos, int currentValue) {
+        List<CyclePath> matchingCycles = cyclesByNode.get(currentValue);
+        if (matchingCycles == null || matchingCycles.isEmpty()) {
+            return null;
+        }
+
+        for (CyclePath cycle : matchingCycles) {
+            List<Integer> nodes = cycle.nodes();
+            int cycleLen = nodes.size();
+
+            // Check if the next (cycleLen * 2) bytes match at least 2 complete cycles
+            int repeatCount = 0;
+            int pos = startPos;
+            while (repeatCount < 65535 && pos + (cycleLen * (repeatCount + 1)) <= input.length) {
+                boolean matches = true;
+                for (int j = 0; j < cycleLen; j++) {
+                    int expectedNode = nodes.get(j);
+                    int actualValue = input[pos + (repeatCount * cycleLen) + j] & 0xFF;
+                    if (expectedNode != actualValue) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) {
+                    repeatCount++;
+                } else {
+                    break;
+                }
+            }
+
+            // Only use CYCLE tier if we have at least 2 repeats (cost saving)
+            if (repeatCount >= 2) {
+                int indexBits = cycles.isEmpty() ? 1
+                        : Math.max(1, 32 - Integer.numberOfLeadingZeros(cycles.size() - 1));
+                int cycleCost = 3 + indexBits + 16; // flag + cycleIndex + repeatCount
+                int directCost = cycleLen * repeatCount * 9; // worst case: all LITERAL (9 bits each)
+                if (cycleCost < directCost) {
+                    return new CycleMatch(cycle, repeatCount);
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Find the index of a cycle in the cycles list.
+     */
+    private int findCycleIndex(CyclePath target) {
+        for (int i = 0; i < cycles.size(); i++) {
+            if (cycles.get(i) == target) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Write a CYCLE token: flag=1, flag2=1, flag3=0, then cycleIndex and repeatCount.
+     */
+    private void writeCycleToken(BitStreamWriter writer, int cycleIndex, int repeatCount) {
+        writer.writeBit(1);
+        writer.writeBit(1);
+        writer.writeBit(0);
+        int indexBits = cycles.isEmpty() ? 1
+                : Math.max(1, 32 - Integer.numberOfLeadingZeros(cycles.size() - 1));
+        writer.writeBits(cycleIndex, indexBits);
+        writer.writeBits(repeatCount, 16);
     }
 
     private boolean tryRelational(BitStreamWriter writer, int from, int to) {
@@ -189,6 +296,12 @@ public class MrcEncoder {
             for (TransitionEdge edge : edges) {
                 byte opId = OpIdMap.getOpId(edge.op());
                 writer.writeByte(opId);
+                // Write operand bits for this operator
+                int operandBits = OpIdMap.getOperandBits(opId);
+                if (operandBits > 0) {
+                    int operand = extractOperand(edge.op());
+                    writer.writeBits(operand & ((1 << operandBits) - 1), operandBits);
+                }
             }
         }
 
