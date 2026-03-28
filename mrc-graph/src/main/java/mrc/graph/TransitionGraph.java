@@ -1,0 +1,286 @@
+package mrc.graph;
+
+import mrc.core.OperatorLibrary;
+import mrc.core.Transition;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
+
+/**
+ * Directed multigraph representing transitions between 8-bit values.
+ *
+ * Built by observing pairwise transitions in a data stream. Stores only the
+ * cheapest (most compressing) edge per (from, to) pair and tracks observation
+ * frequency for weight calculation.
+ */
+public class TransitionGraph {
+    private final Map<Integer, List<TransitionEdge>> adjacency;
+    private final long[][] frequencyMatrix;
+    private final OperatorLibrary lib;
+    private Path exportDir;
+
+    /**
+     * Construct an empty TransitionGraph.
+     */
+    public TransitionGraph() {
+        this.adjacency = new HashMap<>();
+        this.frequencyMatrix = new long[256][256];
+        this.lib = OperatorLibrary.getInstance();
+    }
+
+    /**
+     * Observe transitions in a data stream and build the graph.
+     *
+     * Walks the stream pairwise, updating the frequency matrix, then calls
+     * buildEdges() to construct the edge list.
+     *
+     * @param dataStream the input byte array
+     */
+    public void observe(byte[] dataStream) {
+        if (dataStream == null || dataStream.length < 2) {
+            return;
+        }
+
+        // Record pairwise transitions
+        for (int i = 0; i < dataStream.length - 1; i++) {
+            int from = dataStream[i] & 0xFF;
+            int to = dataStream[i + 1] & 0xFF;
+            frequencyMatrix[from][to]++;
+        }
+
+        // Build edges from frequency matrix
+        buildEdges();
+    }
+
+    /**
+     * Build the edge list from the frequency matrix.
+     *
+     * For each (from, to) pair with frequency > 0, find the cheapest operator
+     * (regardless of compression) and create a TransitionEdge.
+     *
+     * This includes non-compressing edges because they can be valuable as part of CYCLE encoding.
+     */
+    private void buildEdges() {
+        for (int from = 0; from < 256; from++) {
+            for (int to = 0; to < 256; to++) {
+                long freq = frequencyMatrix[from][to];
+                if (freq > 0) {
+                    // Use findCheapest to include all operators, not just compressing ones
+                    Optional<Transition> optTrans = Transition.findCheapest(from, to, lib);
+                    if (optTrans.isPresent()) {
+                        Transition trans = optTrans.get();
+                        // Weight = bits saved (may be negative for non-compressing)
+                        double gain = 8 - trans.costBits();
+                        double weight = freq * gain;
+                        TransitionEdge edge = new TransitionEdge(
+                                from, to, trans.op(), trans.costBits(), freq, weight
+                        );
+                        addEdge(edge);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Override or insert an edge for a specific (from, to) pair with a given operator.
+     * Used by FitnessEvaluator to apply chromosome rules before encoding.
+     */
+    public void setEdge(int from, int to, mrc.core.Operator op) {
+        int costBits = 5 + op.operandBits();
+        TransitionEdge edge = new TransitionEdge(from, to, op, costBits, 0, 0);
+        List<TransitionEdge> edges = adjacency.computeIfAbsent(from, k -> new ArrayList<>());
+        edges.removeIf(e -> e.toNode() == to);
+        edges.add(edge);
+    }
+
+    /**
+     * Add an edge to the graph, keeping only the cheapest per (from, to) pair.
+     */
+    private void addEdge(TransitionEdge edge) {
+        List<TransitionEdge> edges = adjacency.computeIfAbsent(edge.fromNode(), k -> new ArrayList<>());
+
+        // Check if we already have an edge for this (from, to) pair
+        for (int i = 0; i < edges.size(); i++) {
+            TransitionEdge existing = edges.get(i);
+            if (existing.fromNode() == edge.fromNode() && existing.toNode() == edge.toNode()) {
+                if (edge.costBits() < existing.costBits()) {
+                    edges.set(i, edge);
+                }
+                return;
+            }
+        }
+
+        edges.add(edge);
+    }
+
+    /**
+     * Get the best (cheapest) edge from one node to another.
+     *
+     * @param from source node (0..255)
+     * @param to target node (0..255)
+     * @return Optional containing the edge, or empty if no edge exists
+     */
+    public Optional<TransitionEdge> bestEdge(int from, int to) {
+        List<TransitionEdge> edges = adjacency.getOrDefault(from, Collections.emptyList());
+        return edges.stream()
+                .filter(e -> e.toNode() == to)
+                .findFirst();
+    }
+
+    /**
+     * Get all edges from a given node.
+     *
+     * @param from source node (0..255)
+     * @return list of edges (empty if no outgoing edges)
+     */
+    public List<TransitionEdge> edgesFrom(int from) {
+        return adjacency.getOrDefault(from, Collections.emptyList());
+    }
+
+    /**
+     * Get all edges to a given node.
+     *
+     * @param to target node (0..255)
+     * @return list of edges
+     */
+    public List<TransitionEdge> edgesTo(int to) {
+        List<TransitionEdge> result = new ArrayList<>();
+        for (List<TransitionEdge> edges : adjacency.values()) {
+            for (TransitionEdge edge : edges) {
+                if (edge.toNode() == to) {
+                    result.add(edge);
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Get the number of nodes with outgoing edges.
+     *
+     * @return node count
+     */
+    public int nodeCount() {
+        return adjacency.size();
+    }
+
+    /**
+     * Get the total number of edges.
+     *
+     * @return edge count
+     */
+    public int edgeCount() {
+        return adjacency.values().stream().mapToInt(List::size).sum();
+    }
+
+    /**
+     * Calculate the average weight of all edges.
+     *
+     * @return average weight
+     */
+    public double averageWeight() {
+        if (edgeCount() == 0) {
+            return 0.0;
+        }
+        double totalWeight = adjacency.values().stream()
+                .flatMap(List::stream)
+                .mapToDouble(TransitionEdge::weight)
+                .sum();
+        return totalWeight / edgeCount();
+    }
+
+    /**
+     * Set the default directory for DOT exports.
+     *
+     * Used by the no-arg {@link #exportDot()} overload.
+     *
+     * @param dir the directory to write exported files into
+     */
+    public void setExportDir(Path dir) {
+        this.exportDir = dir;
+    }
+
+    /**
+     * Get the configured default export directory, or null if not set.
+     */
+    public Path getExportDir() {
+        return exportDir;
+    }
+
+    /**
+     * Export the graph to Graphviz DOT format using the configured export directory.
+     *
+     * The output file is named {@code mrc_graph.dot} inside the configured directory.
+     *
+     * @throws IOException if the write fails or no export directory has been configured
+     * @throws IllegalStateException if no export directory has been set via {@link #setExportDir(Path)}
+     */
+    public void exportDot() throws IOException {
+        if (exportDir == null) {
+            throw new IllegalStateException(
+                    "No export directory configured — call setExportDir(Path) first");
+        }
+        exportDot(exportDir.resolve("mrc_graph.dot"));
+    }
+
+    /**
+     * Export the graph to Graphviz DOT format for visualization.
+     *
+     * Only emits edges with positive weight (frequency * bits-saved > 0) to keep
+     * the output manageable — a full 256-node graph can have up to 65 K edges.
+     * Nodes are labelled with their hex value; edges carry the operator expression,
+     * cost in bits, and observation frequency. Edge thickness scales with frequency.
+     *
+     * Render with: {@code dot -Tsvg graph.dot -o graph.svg}
+     *
+     * @param outputPath the path where the .dot file will be written
+     * @throws IOException if the write fails
+     */
+    public void exportDot(Path outputPath) throws IOException {
+        // Collect all positive-weight edges and the nodes they touch
+        List<TransitionEdge> edges = adjacency.values().stream()
+                .flatMap(List::stream)
+                .filter(e -> e.weight() > 0)
+                .sorted(Comparator.comparingDouble(TransitionEdge::weight).reversed())
+                .toList();
+
+        Set<Integer> usedNodes = new LinkedHashSet<>();
+        for (TransitionEdge e : edges) {
+            usedNodes.add(e.fromNode());
+            usedNodes.add(e.toNode());
+        }
+
+        // Max frequency for pen-width scaling (avoid division by zero)
+        long maxFreq = edges.stream().mapToLong(TransitionEdge::frequency).max().orElse(1L);
+
+        try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(outputPath))) {
+            w.println("digraph MRC {");
+            w.println("  graph [rankdir=LR fontname=\"Helvetica\" bgcolor=\"#ffffff\"];");
+            w.println("  node  [shape=circle style=filled fillcolor=\"#ddeeff\" "
+                    + "fontname=\"Helvetica\" fontsize=10];");
+            w.println("  edge  [fontname=\"Helvetica\" fontsize=8];");
+            w.println();
+
+            // Nodes
+            for (int node : usedNodes) {
+                w.printf("  n%d [label=\"0x%02X\"];%n", node, node);
+            }
+            w.println();
+
+            // Edges
+            for (TransitionEdge e : edges) {
+                double penWidth = 1.0 + 4.0 * e.frequency() / maxFreq;
+                String label = String.format("%s\\ncost=%db freq=%d",
+                        e.op().toExpression("x"), e.costBits(), e.frequency());
+                w.printf("  n%d -> n%d [label=\"%s\" penwidth=\"%.2f\"];%n",
+                        e.fromNode(), e.toNode(), label, penWidth);
+            }
+
+            w.println("}");
+        }
+    }
+}
