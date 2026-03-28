@@ -35,7 +35,7 @@ public class SnapshotSerializer {
             String domainTag
     ) throws IOException, MrcSnapshotException {
         // Build sections
-        Map<Byte, byte[]> sections = new HashMap<>();
+        Map<Byte, byte[]> sections = new LinkedHashMap<>();
 
         // TRANSITION_GRAPH section
         if (graph != null) {
@@ -87,8 +87,9 @@ public class SnapshotSerializer {
             header[2] = 0x43;
             header[3] = 0x32;
 
-            // Version (2 bytes)
-            writeTwoBytes(header, 4, 2, 0);
+            // Version (2 bytes): major at offset 4, minor at offset 5
+            header[4] = 2; // major
+            header[5] = 0; // minor
 
             // Flags
             int flags = 0;
@@ -124,7 +125,7 @@ public class SnapshotSerializer {
             int sectionTableSize = 2 + (sectionCount * 9); // 2 for count, 9 per section
             int dataOffset = header.length + sectionTableSize;
 
-            Map<Byte, Integer> offsets = new HashMap<>();
+            Map<Byte, Integer> offsets = new LinkedHashMap<>();
             int currentOffset = dataOffset;
             for (Byte typeId : sections.keySet()) {
                 offsets.put(typeId, currentOffset);
@@ -155,10 +156,6 @@ public class SnapshotSerializer {
 
             raf.seek(23);
             raf.writeInt(crc32);
-            raf.close();
-
-            // Sync to disk
-            Files.write(outputPath, fileBytes, StandardOpenOption.WRITE);
         }
     }
 

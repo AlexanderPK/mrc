@@ -38,7 +38,7 @@ public record SnapshotManifest(
      */
     public static SnapshotManifest read(Path snapshotFile) throws MrcSnapshotException {
         try (RandomAccessFile raf = new RandomAccessFile(snapshotFile.toFile(), "r")) {
-            byte[] header = new byte[32];
+            byte[] header = new byte[29];
             raf.readFully(header);
 
             // Check magic bytes (MRC2)

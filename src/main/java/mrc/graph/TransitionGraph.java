@@ -86,6 +86,18 @@ public class TransitionGraph {
     }
 
     /**
+     * Override or insert an edge for a specific (from, to) pair with a given operator.
+     * Used by FitnessEvaluator to apply chromosome rules before encoding.
+     */
+    public void setEdge(int from, int to, mrc.core.Operator op) {
+        int costBits = 5 + op.operandBits();
+        TransitionEdge edge = new TransitionEdge(from, to, op, costBits, 0, 0);
+        List<TransitionEdge> edges = adjacency.computeIfAbsent(from, k -> new ArrayList<>());
+        edges.removeIf(e -> e.toNode() == to);
+        edges.add(edge);
+    }
+
+    /**
      * Add an edge to the graph, keeping only the cheapest per (from, to) pair.
      */
     private void addEdge(TransitionEdge edge) {

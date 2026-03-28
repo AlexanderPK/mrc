@@ -44,8 +44,7 @@ public class FitnessEvaluator {
 
             // Override edges with chromosome rules
             for (Chromosome.OperatorRule rule : chromosome.rules()) {
-                // This would require adding a method to TransitionGraph to override edges
-                // For now, we'll just use a simple evaluation
+                graph.setEdge(rule.fromValue(), rule.toValue(), rule.assignedOperator());
             }
 
             // Encode using the graph (with overrides, if implemented)

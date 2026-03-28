@@ -109,12 +109,17 @@ public interface SelectionStrategy {
             for (int i = 0; i < count; i++) {
                 double r = rng.nextDouble();
                 double cumulative = 0.0;
+                boolean added = false;
                 for (int j = 0; j < n; j++) {
                     cumulative += weights[j];
                     if (r <= cumulative) {
                         selected.add(sorted.get(j));
+                        added = true;
                         break;
                     }
+                }
+                if (!added) {
+                    selected.add(sorted.get(n - 1)); // fallback: floating-point rounding guard
                 }
             }
 

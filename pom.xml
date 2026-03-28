@@ -66,6 +66,9 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.0.0-M9</version>
+                <configuration>
+                    <excludedGroups>slow</excludedGroups>
+                </configuration>
             </plugin>
 
             <!-- Maven Jar Plugin -->

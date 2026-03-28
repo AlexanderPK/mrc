@@ -112,11 +112,12 @@ public record Chromosome(
             for (int i = 0; i < ruleCount; i++) {
                 int from = dis.readUnsignedByte();
                 int to = dis.readUnsignedByte();
-                byte opId = dis.readByte();
+                dis.readByte(); // opId (operand not stored, so we reconstruct via findShortest)
                 dis.readByte(); // reserved
-                Operator op = lib.createOperator(opId, 0);
-                if (op != null) {
-                    rules.add(new OperatorRule(from, to, op));
+                // Reconstruct with correct operand by looking up the best operator for (from, to)
+                Optional<Operator> optOp = lib.findShortest(from, to);
+                if (optOp.isPresent()) {
+                    rules.add(new OperatorRule(from, to, optOp.get()));
                 }
             }
             dis.close();

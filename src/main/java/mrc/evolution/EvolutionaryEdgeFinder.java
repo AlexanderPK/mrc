@@ -25,6 +25,7 @@ public class EvolutionaryEdgeFinder implements Runnable {
     private final AtomicReference<Chromosome> bestChromosome = new AtomicReference<>();
     private final List<Chromosome> population = Collections.synchronizedList(new ArrayList<>());
     private final CircularDataBuffer corpus;
+    private final Random rng;
     private long generationCount = 0;
     private GenerationResult lastResult;
 
@@ -34,12 +35,23 @@ public class EvolutionaryEdgeFinder implements Runnable {
             TransitionGraph seedGraph,
             EvolutionMonitor monitor
     ) {
+        this(config, lib, seedGraph, monitor, new Random());
+    }
+
+    public EvolutionaryEdgeFinder(
+            EvolutionConfig config,
+            ExtendedOperatorLibrary lib,
+            TransitionGraph seedGraph,
+            EvolutionMonitor monitor,
+            Random rng
+    ) {
         this.config = config;
         this.lib = lib;
         this.monitor = monitor;
+        this.rng = rng;
         this.corpus = new CircularDataBuffer(config.corpusWindowSize());
         this.fitnessEvaluator = new FitnessEvaluator(lib, null);
-        this.factory = new ChromosomeFactory(lib, new Random());
+        this.factory = new ChromosomeFactory(lib, rng);
 
         // Initialize selection strategy
         this.selectionStrategy = new SelectionStrategy.EliteSelection(
@@ -47,15 +59,14 @@ public class EvolutionaryEdgeFinder implements Runnable {
                 new SelectionStrategy.TournamentSelection(config.tournamentSize())
         );
 
-        this.crossoverEngine = new CrossoverEngine(config, new Random());
-        this.mutationEngine = new MutationEngine(config, lib, new Random());
+        this.crossoverEngine = new CrossoverEngine(config, rng);
+        this.mutationEngine = new MutationEngine(config, lib, rng);
 
         // Initialize population
         initializePopulation();
     }
 
     private void initializePopulation() {
-        Random rng = new Random();
         for (int i = 0; i < config.populationSize(); i++) {
             Chromosome c = factory.createRandom(rng.nextInt(50) + 10); // 10-60 rules
             if (factory.isValid(c)) {
@@ -121,9 +132,9 @@ public class EvolutionaryEdgeFinder implements Runnable {
 
                 // 6. Selection and reproduction
                 List<Chromosome> elite = selectionStrategy.select(population,
-                        config.eliteCount(), new Random());
+                        config.eliteCount(), rng);
                 List<Chromosome> parents = selectionStrategy.select(population,
-                        config.populationSize() - config.eliteCount(), new Random());
+                        config.populationSize() - config.eliteCount(), rng);
 
                 List<Chromosome> offspring = new ArrayList<>(elite);
                 for (int i = 0; i < parents.size(); i += 2) {
@@ -150,7 +161,7 @@ public class EvolutionaryEdgeFinder implements Runnable {
                 // 8. Record statistics
                 if (monitor != null && !population.isEmpty()) {
                     monitor.record(generationCount, bestChromosome.get(),
-                            new ArrayList<>(population));
+                            new ArrayList<>(population), corpus.size());
                 }
 
                 lastResult = GenerationResult.of(generationCount,

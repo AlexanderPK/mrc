@@ -83,12 +83,7 @@ public class SnapshotDeserializer {
             raf.seek(section.offset());
             byte[] data = new byte[section.length()];
             raf.readFully(data);
-            ByteArrayInputStream bais = new ByteArrayInputStream(data);
-            DataInputStream dis = new DataInputStream(bais);
-            int len = dis.readInt();
-            byte[] chromosomeData = new byte[len];
-            dis.readFully(chromosomeData);
-            return Chromosome.fromBytes(chromosomeData, (int) manifest.generation(), lib);
+            return Chromosome.fromBytes(data, (int) manifest.generation(), lib);
         }
     }
 

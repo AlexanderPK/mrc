@@ -17,13 +17,16 @@ public class EvolutionMonitor {
 
     /**
      * Record statistics from a generation.
+     *
+     * @param corpusBytesProcessed the actual number of corpus bytes used for fitness evaluation
      */
-    public void record(long generation, Chromosome best, java.util.List<Chromosome> population) {
+    public void record(long generation, Chromosome best, java.util.List<Chromosome> population,
+                       long corpusBytesProcessed) {
         GenerationResult result = GenerationResult.of(
                 generation,
                 best,
                 population,
-                population.stream().mapToLong(c -> c.size()).sum(),
+                corpusBytesProcessed,
                 Instant.now()
         );
         synchronized (lock) {
@@ -97,26 +100,29 @@ public class EvolutionMonitor {
     }
 
     /**
-     * Print an ASCII histogram of fitness distribution in the population.
+     * Print an ASCII histogram of best-fitness distribution across all recorded generations.
      */
     public void printHistogram(PrintStream out) {
-        GenerationResult latest = latest();
-        if (latest == null) {
+        List<GenerationResult> snap;
+        synchronized (lock) {
+            snap = new ArrayList<>(history);
+        }
+        if (snap.isEmpty()) {
             out.println("No data to display");
             return;
         }
 
-        out.println("Fitness distribution (latest generation):");
-        out.println("  0.0-0.1 |" + repeat("#", 1));
-        out.println("  0.1-0.2 |" + repeat("#", 2));
-        out.println("  0.2-0.3 |" + repeat("#", 3));
-        out.println("  0.3-0.4 |" + repeat("#", 4));
-        out.println("  0.4-0.5 |" + repeat("#", 5));
-        out.println("  0.5-0.6 |" + repeat("#", 6));
-        out.println("  0.6-0.7 |" + repeat("#", 7));
-        out.println("  0.7-0.8 |" + repeat("#", 8));
-        out.println("  0.8-0.9 |" + repeat("#", 9));
-        out.println("  0.9-1.0 |" + repeat("#", 10));
+        int[] buckets = new int[10];
+        for (GenerationResult r : snap) {
+            int idx = (int) (r.bestFitness() * 10);
+            idx = Math.max(0, Math.min(9, idx));
+            buckets[idx]++;
+        }
+
+        out.println("Fitness distribution (best fitness per generation):");
+        for (int i = 0; i < 10; i++) {
+            out.printf("  %.1f-%.1f |%s%n", i * 0.1, (i + 1) * 0.1, "#".repeat(buckets[i]));
+        }
     }
 
     private String repeat(String s, int count) {
