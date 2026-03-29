@@ -14,8 +14,9 @@
 10. [Complexity Analysis](#complexity-analysis)
 11. [Theoretical Bounds & Limitations](#theoretical-bounds--limitations)
 12. [Snapshot Protocol](#snapshot-protocol)
-13. [Scientific References](#scientific-references)
-14. [Open Research Questions](#open-research-questions)
+13. [Distributed Adaptive Compression Platform](#distributed-adaptive-compression-platform)
+14. [Scientific References](#scientific-references)
+15. [Open Research Questions](#open-research-questions)
 
 ---
 
@@ -748,6 +749,81 @@ Detects file corruption:
 
 ---
 
+## Distributed Adaptive Compression Platform
+
+### Theoretical Motivation
+
+A single GA run is expensive but produces domain-optimal operator sets. A single compressor run is cheap but benefits enormously from those operator sets. Tightly coupling them wastes compute on every compression call. **Separation of concerns** enables:
+
+- GA runs on a powerful dedicated node (or cloud VM) with large corpus, many generations
+- Codec runs anywhere, cheaply, reusing published operator sets via the snapshot store
+- Multiple GA instances can specialize by domain (audio, text, binary) simultaneously
+
+### Content-Addressed Snapshot Store
+
+**Formal model**: Let `S` be the set of all valid snapshot files. Define:
+
+$$\text{id}(s) = \text{Hex}(\text{SHA-256}(s))$$
+
+The store is a partial function `store : id → s` with the invariant:
+
+$$\forall s_1, s_2 \in S : \text{id}(s_1) = \text{id}(s_2) \Rightarrow s_1 = s_2$$
+
+(by collision resistance of SHA-256 — probability of collision ≤ 2⁻¹²⁸).
+
+**Deduplication**: Same operator set → same serialized bytes (deterministic serializer) → same SHA-256 → same ID → no duplicate disk writes. Evolution produces identical-fitness chromosomes at convergence; dedup prevents store bloat.
+
+**Immutability**: Once published, a snapshot is never modified. This makes IDs stable references: a v0x03 compressed file embeds an ID that will always resolve to the same operator set.
+
+### Information-Theoretic View of Snapshots
+
+A snapshot encodes the conditional probability model `P(X_t | X_{t-1})` learned by the GA on the training corpus. Given this model, the codec applies Huffman-like prefix coding per transition:
+
+$$H(X | \text{snapshot}) = -\sum_{x,y} p(x) p(y|x) \log_2 p(y|x)$$
+
+For arithmetic data with step `+k`, the GA converges to a chromosome with a single rule `Add(k)`. The model assigns `P(X_t = x+k | X_{t-1} = x) ≈ 1`, giving `H(X | snapshot) ≈ 0` — approaching the theoretical lower bound.
+
+### DataFingerprint: Feature Extraction Theory
+
+The 12-element fingerprint vector characterizes byte sequences for domain classification:
+
+**Entropy** (feature 0): `H(X) / 8` — normalized Shannon entropy. High entropy (→1) indicates random data; low entropy (→0) indicates structured data.
+
+**Arithmetic-run density** (feature 1): Fraction of bytes covered by constant-step arithmetic runs (`MIN_RUN = 4`). High values indicate periodic or linearly-growing sequences (sensor data, counters, LCG streams).
+
+**Cycle density** (feature 2): Fraction of consecutive byte pairs whose delta matches within a sliding window of size 8. High values indicate short repeating sequences (run-length encoding candidates).
+
+**Delta histogram** (features 3–10): 8 equal-width buckets (width 32) for `|b[i+1] - b[i]|`:
+- Bucket 0 (Δ ∈ [0,32)): near-constant sequences → arithmetic codec efficient
+- Bucket 7 (Δ ∈ [224,255]): high-variance sequences → likely random
+Distribution shape distinguishes domain types without needing a full histogram of byte values.
+
+**Mean delta** (feature 11): `E[|Δ|] / 255` — normalized. Low for smooth signals (audio, slowly varying sensors); high for random or encrypted data.
+
+**Cosine similarity** between two fingerprints:
+
+$$\text{sim}(a, b) = \frac{a \cdot b}{\|a\| \cdot \|b\|}$$
+
+Invariant to scale — a 4 KB sample and a 400 KB corpus of the same type give the same fingerprint direction.
+
+### GA-Snapshot Convergence Property
+
+**Claim**: As GA generations → ∞, the published snapshot approaches the optimal operator set for the training domain.
+
+**Argument**: The fitness function directly estimates compression ratio on a sliding corpus window. By the schema theorem (Holland, 1975), high-fitness schemata (operator patterns matching the domain structure) proliferate across generations. The snapshot captures the highest-fitness chromosome seen, which monotonically improves (elitist selection). In the limit, the snapshot encodes a model that matches `H(X | X_{i-1})` for the domain.
+
+**Practical bound**: For arithmetic data with known step `k`, optimal fitness is achieved in O(population_size) evaluations because `Add(k)` is a single-gene chromosome with maximal coverage. For complex mixed data, convergence is slower but bounded by the diversity of the extended operator library.
+
+### v0x03 Format: Theoretical Justification
+
+Embedding `snapshot_id` in the compressed stream couples the compression decision to the decompression context without requiring out-of-band metadata. The 32-byte SHA-256 ID is:
+
+1. **Self-verifying**: Decoder confirms snapshot integrity by comparing `SHA-256(loadedBytes)` to the embedded ID
+2. **Content-addressed**: Same snapshot content on any node → same ID → consistent decompression
+3. **Forward-compatible**: Mode byte allows future extension (e.g., mode 0x02 = federated store, mode 0x03 = inline delta)
+
+---
+
 ## Scientific References
 
 ### Foundational Works
@@ -824,11 +900,19 @@ Detects file corruption:
 
 5. **Lossy Extensions**: What happens to compression ratio if we allow controlled information loss (rate-distortion trade-off)?
 
+6. **Snapshot Staleness**: When does a published snapshot become suboptimal for a domain as the data distribution shifts? What is the optimal snapshot refresh interval?
+
+7. **Fingerprint Dimensionality**: Is 12 the right number of features for `DataFingerprint`? Can a learned embedding (e.g., contrastive training on domain pairs) outperform handcrafted features?
+
+8. **Multi-Domain GA**: Can a single chromosome generalize across multiple domains, or does optimal compression always require domain-specialized operator sets?
+
 ### Experimental Hypotheses
 
 - **H1**: Operator-aware crossover reduces convergence time by 50% vs standard crossover
 - **H2**: Cycle-based encoding (v0x01) outperforms arithmetic runs (v0x02) on repetitive data with probability > 0.9
 - **H3**: Transition graph structure (SCC distribution) predicts compression achievability
+- **H4**: DataFingerprint cosine similarity correctly identifies the domain-matching snapshot ≥ 90% of the time on held-out test data
+- **H5**: v0x03 connected-mode compression ratio equals v0x02 ratio on arithmetic data (snapshot rules add no overhead on already-optimal data)
 
 ---
 
@@ -843,16 +927,18 @@ Raw Data
    ↓
 [Cycle Detection] — find repeating structures via Tarjan + Johnson
    ↓
-[Genetic Algorithm] — evolve better operator rules (optional)
+[GA Engine Service] — evolve better operator rules (distributed, continuous)
    ↓
-[Encoder] — apply best rules:
+[Snapshot Store] — content-addressed SHA-256 keyed immutable store
+   ↓
+[Selector Service] — pick best snapshot for input via DataFingerprint cosine similarity
+   ↓
+[v0x03 Encoder] — apply evolved operator rules from snapshot:
    ├→ LITERAL (9 bits)
-   ├→ RELATIONAL (7-15 bits)
-   └→ CYCLE (20+ bits)
+   ├→ ARITH_RUN (33 bits, reused many times)
+   └→ Snapshot ID embedded in header (41 bytes fixed)
    ↓
-[Snapshot] — serialize operator set for distribution
-   ↓
-Compressed Data
+Compressed Data (v0x03)
 ```
 
 Each stage builds on the previous to maximize compression while remaining lossless.
@@ -865,12 +951,13 @@ MRC combines:
 1. **Information Theory**: Exploits conditional entropy $H(X_i | X_{i-1})$
 2. **Graph Theory**: Finds cycles via Tarjan + Johnson algorithms
 3. **Algebra**: Leverages operator composition and group structure
-4. **Genetic Algorithms**: Evolves domain-specific operator sets
+4. **Genetic Algorithms**: Evolves domain-specific operator sets continuously
 5. **Coding Theory**: Uses prefix-free codes (Kraft inequality)
+6. **Distributed Systems**: Content-addressed snapshot store + service separation
 
 The synergy achieves compression rates approaching Shannon bounds for highly structured data, while remaining theoretically lossless and practical.
 
 ---
 
 **Last Updated**: 2026-03-28
-**Version**: 3.0 (Unified comprehensive theory with mathematical rigor and scientific citations)
+**Version**: 4.0 (Phase 3 distributed platform: content-addressed snapshots, DataFingerprint, GA-codec separation)

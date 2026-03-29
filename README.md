@@ -1,248 +1,145 @@
 # MRC — Multi-value Relational Compression
 
-A self-contained Java library that compresses streams of 8-bit unsigned integers using algebraic operator transitions, arithmetic run detection, and extended operator spaces.
+A distributed Java platform that compresses streams of 8-bit unsigned integers using algebraic operator transitions, arithmetic run detection, extended operator spaces, and a continuously evolving GA engine that publishes operator sets as content-addressed snapshots.
 
 ## Quick Start
 
-### Build
+### Build all modules
 ```bash
-mvn clean compile
+mvn clean install
 ```
 
-### Run All Tests (78 tests)
+### Run all tests (193 tests across 9 modules)
 ```bash
 mvn test
 ```
 
-**Test Results:**
-- `OperatorLibraryTest`: 17/17 ✅
-- `TransitionGraphTest`: 14/14 ✅
-- `CycleDetectorTest`: 7/7 ✅
-- `RoundTripTest`: 9/9 ✅
-- `LargeInputBenchmarkTest`: 4/4 ✅
-- `ExtendedOperatorTest`: 27/27 ✅
-
-### Run Specific Tests
+### Run a specific module's tests
 ```bash
-mvn test -Dtest=OperatorLibraryTest
-mvn test -Dtest=TransitionGraphTest
-mvn test -Dtest=CycleDetectorTest
-mvn test -Dtest=RoundTripTest
-mvn test -Dtest=LargeInputBenchmarkTest   # 1.3 MB test inputs
-mvn test -Dtest=ExtendedOperatorTest      # Phase 2 extended operators
+mvn test -pl mrc-core --also-make
+mvn test -pl mrc-codec --also-make
+mvn test -pl mrc-ga-service --also-make
 ```
 
-### Run Main
-```bash
-mvn compile exec:java -Dexec.mainClass=mrc.Main
-```
+**Test Results by module:**
+
+| Module | Tests | Status |
+|--------|-------|--------|
+| `mrc-core` | 44 | ✅ |
+| `mrc-graph` | 21 | ✅ |
+| `mrc-codec` | 13 | ✅ |
+| `mrc-evolution` | 59 | ✅ |
+| `mrc-snapshot` | 15 | ✅ |
+| `mrc-snapshot-db` | 10 | ✅ |
+| `mrc-codec-v3` | 11 | ✅ |
+| `mrc-selector` | 13 | ✅ |
+| `mrc-ga-service` | 7 | ✅ |
+| **Total** | **193** | ✅ |
 
 ---
 
-## Compression Example
+## Compression Examples
 
-### v0x02 — Arithmetic Run Encoder (recommended)
+### v0x02 — Arithmetic Run Encoder (embedded use)
 ```java
-// Detect arithmetic runs in the data
 SequenceDetector detector = new SequenceDetector();
 List<ArithmeticPattern> patterns = detector.topPatterns(inputData, 255);
 
-// Compress
 MrcEncoder encoder = new MrcEncoder(patterns);
 CompressionResult result = encoder.encode(inputData);
 System.out.println("Ratio: " + result.ratio());  // e.g., 0.0002 for arithmetic data
 
-// Decompress
 MrcDecoder decoder = new MrcDecoder();
 byte[] decoded = decoder.decode(result.compressedData());
 assert Arrays.equals(inputData, decoded);
 ```
 
-### v0x01 — Cycle-based Encoder
+### v0x03 — Snapshot-Aware Encoder (distributed use)
 ```java
-TransitionGraph graph = new TransitionGraph();
-graph.observe(trainingData);
+// Encode with a snapshot from the store
+SnapshotStore store = new FileSnapshotStore(Path.of("/var/mrc/snapshots"));
+SnapshotAwareEncoder enc = new SnapshotAwareEncoder();
+byte[] compressed = enc.encodeConnected(inputData, snapshotId, store);
 
-CycleDetector detector = new CycleDetector(graph, 8);
-MrcEncoder encoder = new MrcEncoder(graph, detector.topCycles(255));
-CompressionResult result = encoder.encode(inputData);
-
-MrcDecoder decoder = new MrcDecoder();
-byte[] decoded = decoder.decode(result.compressedData());
+// Decode on any node that has the same store
+SnapshotAwareDecoder dec = new SnapshotAwareDecoder();
+byte[] restored = dec.decodeConnected(compressed, store);
+assert Arrays.equals(inputData, restored);
 ```
 
 ### DOT Graph Export
 ```java
 TransitionGraph graph = new TransitionGraph();
 graph.observe(data);
-
-// Explicit path
 graph.exportDot(Path.of("graph.dot"));
-
-// Or configure a default directory
-graph.setExportDir(Path.of(".tmp/xyz"));
-graph.exportDot();  // writes .tmp/xyz/mrc_graph.dot
 ```
 Render with: `dot -Tsvg graph.dot -o graph.svg`
+
+---
+
+## Running the Services
+
+### GA Engine Service
+```bash
+java -cp mrc-ga-service/target/mrc-ga-service-1.0.0-SNAPSHOT.jar \
+     mrc.gaservice.GaServiceMain \
+     --store-path /var/mrc/snapshots \
+     --domain audio-v3 \
+     --max-generations 500 \
+     --snapshot-every 10 \
+     --health-port 8080
+```
+Health check: `curl http://localhost:8080/health`
+```json
+{"status":"running","generation":120,"best_fitness":0.871234}
+```
+
+### Selector Service
+```bash
+java -cp mrc-selector/target/mrc-selector-1.0.0-SNAPSHOT.jar \
+     mrc.selector.SelectorServerMain \
+     --store-path /var/mrc/snapshots \
+     --port 8081
+```
+Select best snapshot for a sample:
+```bash
+curl -X POST http://localhost:8081/select \
+     --data-binary @sample.bin \
+     -H "Content-Type: application/octet-stream"
+```
+```json
+{"snapshot_id":"a3f7...","score":0.87,"domain":"audio-v3"}
+```
 
 ---
 
 ## Project Structure
 
 ```
-src/
-├── main/java/mrc/                        # 38 source files
-│   ├── Main.java
-│   ├── core/                             # Operator algebra
-│   │   ├── Operator.java                 # Interface (open, not sealed)
-│   │   ├── Add, Sub, Mul, Div, Mod       # Arithmetic operators
-│   │   ├── XorOp, AndOp, OrOp           # Bitwise operators
-│   │   ├── ShiftLeft, ShiftRight, Not    # Shift/invert operators
-│   │   ├── OpIdMap.java                  # Type-level opId mapping (0..10)
-│   │   ├── OperatorLibrary.java          # Singleton, ~2,400 instances
-│   │   ├── Transition.java
-│   │   ├── ValueCluster.java
-│   │   └── extended/                     # Phase 2 — Level 1-3 operators
-│   │       ├── OperatorArity.java        # UNARY / BINARY enum
-│   │       ├── FunctionOperator.java     # Sealed: Polynomial, LinearCongruential,
-│   │       │                             #   TableLookup, RotateLeft, RotateRight,
-│   │       │                             #   BitReverse, NibbleSwap, DeltaOfDelta
-│   │       ├── SuperfunctionOperator.java # Sealed: Iterated, FixedPointReach, Conjugate
-│   │       ├── CompositeOperator.java    # 2-4 operator chain + optimized()
-│   │       ├── OperatorCostModel.java    # Break-even analysis utilities
-│   │       └── ExtendedOperatorLibrary.java # Extends base library
-│   ├── graph/                            # Transition graph and analysis
-│   │   ├── TransitionGraph.java          # Directed multigraph, DOT export
-│   │   ├── TransitionEdge.java
-│   │   ├── CycleDetector.java            # Tarjan's SCC + Johnson's algorithm
-│   │   ├── CyclePath.java
-│   │   ├── ArithmeticPattern.java        # step, runCount, totalRunBytes, savings
-│   │   ├── SequenceDetector.java         # Linear scan for arithmetic runs
-│   │   └── GraphProfiler.java            # Statistics and analysis
-│   ├── codec/                            # Encoder / decoder
-│   │   ├── BitStreamWriter.java
-│   │   ├── BitStreamReader.java
-│   │   ├── EncodingTier.java             # LITERAL, RELATIONAL, CYCLE, ARITH_RUN
-│   │   ├── MrcEncoder.java               # v0x01 (cycle) + v0x02 (arith run)
-│   │   ├── MrcDecoder.java               # Version-dispatched decoder
-│   │   ├── CompressionResult.java
-│   │   └── MrcFormatException.java
-│   └── bench/                            # Benchmarks and validation
-│       ├── RandomBaselineSuite.java      # 6 baseline tests, exports DOT to .tmp/xyz
-│       └── CompressionBenchmark.java
-└── test/java/mrc/                        # 8 test files
-    ├── core/OperatorLibraryTest.java
-    ├── core/extended/ExtendedOperatorTest.java
-    ├── graph/TransitionGraphTest.java
-    ├── graph/CycleDetectorTest.java
-    ├── codec/RoundTripTest.java
-    ├── LargeInputBenchmarkTest.java
-    ├── TestInputs.java
-    └── test/resources/test-inputs/
-        ├── random-500kb.bin
-        ├── arithmetic-400kb.bin
-        ├── text-like-300kb.bin
-        └── repetitive-100kb.bin
+mrc-phase1/                        ← root aggregator POM
+├── mrc-core/                      ← Operator algebra, OpIdMap, OperatorLibrary, ExtendedOperatorLibrary
+├── mrc-graph/                     ← TransitionGraph, CycleDetector, SequenceDetector, GraphProfiler
+├── mrc-codec/                     ← MrcEncoder (v0x01/v0x02), MrcDecoder, CompressionResult
+├── mrc-evolution/                 ← Chromosome, GA classes (ChromosomeFactory, FitnessEvaluator, EvolutionaryEdgeFinder)
+├── mrc-snapshot/                  ← Snapshot protocol: SnapshotSerializer, SnapshotDeserializer, manifest
+├── mrc-snapshot-db/               ← Content-addressed FS store (SHA-256 keyed), SnapshotIndex
+├── mrc-codec-v3/                  ← Snapshot-aware v0x03 encoder/decoder (SnapshotAwareEncoder/Decoder, V3Header)
+├── mrc-selector/                  ← HTTP selector service: DataFingerprint, SnapshotRanker, SelectorServer
+└── mrc-ga-service/                ← GA loop service: GaServiceMain, HealthServer
 ```
 
----
-
-## Architecture
-
-### Core Module (`mrc/core/`)
-
-**`Operator`** — Open interface for algebraic byte transformations:
-- 11 base implementations: `Add`, `Sub`, `Mul`, `Div`, `Mod`, `XorOp`, `AndOp`, `OrOp`, `ShiftLeft`, `ShiftRight`, `Not`
-- Each has a unique 5-bit opId and encoding cost (operandBits: 0, 3, or 8)
-- `apply(int x)` — unary transform; `apply(int x, int context)` — binary (default delegates to unary)
-- `OperatorLibrary` — singleton, lazily builds and caches all ~2,400 instances
-
-**`extended/` — Phase 2 Level 1–3 operators:**
-
-| Level | Class | Implementations | opId range |
-|-------|-------|----------------|------------|
-| 1 | `FunctionOperator` | Polynomial, LinearCongruential, TableLookup, RotateLeft, RotateRight, BitReverse, NibbleSwap, DeltaOfDelta | 32–39 |
-| 2 | `CompositeOperator` | Chain of 2–4 operators; `optimized()` fuses Add+Add, XOR+XOR, Not+Not, etc. | 40 |
-| 3 | `SuperfunctionOperator` | Iterated (f^n), FixedPointReach, Conjugate (h⁻¹∘f∘h) | 64–66 |
-
-`OperatorCostModel` — break-even analysis: `relationalTokenCost()`, `arithRunBreakEven()=4`, `estimatedArithRunSavings(runLen)`.
-
-`ExtendedOperatorLibrary` — extends base library; `findShortestExtended(from, to)` searches both pools.
-
----
-
-### Graph Module (`mrc/graph/`)
-
-**`TransitionGraph`** — Directed multigraph, 256 nodes (one per byte value):
-- `observe(byte[])` — builds edges from training data; keeps cheapest operator per (from, to) pair
-- `exportDot(Path)` — Graphviz DOT export; emits only positive-weight edges, frequency-scaled penwidth
-- `setExportDir(Path)` / `exportDot()` — no-arg overload using configured directory
-
-**`SequenceDetector`** — Linear scan for arithmetic runs (mod-256 constant step):
-- `MIN_RUN = 4` bytes (ARITH_RUN token breaks even at 4 × 9 bits = 36 > 33 bits)
-- `detect(byte[])` — returns all `ArithmeticPattern` records sorted by estimated savings
-- `topPatterns(byte[], int k)` — top-K via min-heap, O(n log k)
-
-**`ArithmeticPattern`** — `record(int step, long totalRunBytes, long runCount, long estimatedSavingBits)`:
-- `signedStep()` — converts 0..255 to −128..127
-- `label()` — human-readable e.g. `+3`, `repeat(0)`, `-1`
-
-**`CycleDetector`** — Johnson's algorithm with Tarjan's SCC preprocessing:
-- Parallelised per SCC via `ExecutorService`
-- `topCycles(int k)` — O(n log k) partial sort by compression gain
-
----
-
-### Codec Module (`mrc/codec/`)
-
-**Two format versions, both lossless:**
-
-#### v0x01 — Cycle-based (original)
+**Module dependency order** (each depends only on modules listed above it):
 ```
-Header: MRC + 0x01 + cycle table + original length
-Data:   LITERAL  (flag=0  + 8 bits = 9 bits)
-        RELATIONAL (flag=10 + 5-bit opId + operand = 7-15 bits)
-        CYCLE    (flag=110 + index + 16-bit count)
+mrc-core
+  └── mrc-graph
+        └── mrc-codec
+              └── mrc-evolution
+                    └── mrc-snapshot
+                          └── mrc-snapshot-db
+                                ├── mrc-codec-v3  (also needs mrc-codec, mrc-snapshot)
+                                ├── mrc-selector  (also needs mrc-codec)
+                                └── mrc-ga-service (also needs mrc-evolution, mrc-snapshot)
 ```
-
-#### v0x02 — Arithmetic run (current default)
-```
-Header: MRC + 0x02 + step count + step values + original length
-Data:   LITERAL   (flag=0 + 8 bits  = 9 bits)
-        ARITH_RUN (flag=1 + 8-bit stepIdx + 8-bit startVal + 16-bit runLen = 33 bits)
-```
-
-`MrcEncoder` constructor dispatch:
-- `MrcEncoder(List<ArithmeticPattern>)` → v0x02
-- `MrcEncoder(TransitionGraph, List<CyclePath>)` → v0x01
-
-`MrcDecoder.decode()` reads the version byte and dispatches automatically.
-
----
-
-### Bench Module (`mrc/bench/`)
-
-**`RandomBaselineSuite`** — 6 validation tests, each encoding + round-trip verifying:
-1. Uniform random (≤ 2% overhead)
-2. LCG stream (algebraic recurrence)
-3. Mersenne Twister
-4. Gaussian quantized (clustered transitions)
-5. Arithmetic sequence (< 30% ratio)
-6. Sine wave (periodic structure)
-
-Each test exports a named `.dot` file to `.tmp/xyz` by default.
-Override: `RandomBaselineSuite.runAll(out, Path.of("custom/dir"))`.
-
----
-
-## Compression Performance
-
-| Data Type | Size | Compressed | Ratio | Notes |
-|-----------|------|-----------|-------|-------|
-| Arithmetic sequence | 400 KB | ~39 B | ~0.0001 | 4 ARITH_RUN tokens |
-| Repetitive (step=0) | 100 KB | ~19 B | ~0.0002 | 2 ARITH_RUN tokens |
-| Text-like | 300 KB | ~280 KB | ~0.93 | Mostly literals |
-| Uniform random | 500 KB | ~563 KB | ~1.13 | Expected overhead |
 
 ---
 
@@ -265,14 +162,35 @@ CompositeOperator:    40
 SuperfunctionOperator: Iterated=64  FixedPointReach=65  Conjugate=66
 ```
 
+### v0x03 Header (41 bytes fixed)
+```
+Offset  Size  Field
+0       4     magic = 0x4D 0x52 0x43 0x33  ("MRC3")
+4       1     mode  (0x00=standalone, 0x01=connected)
+5       32    snapshot_id (SHA-256 raw bytes)
+37      4     body_length (big-endian)
+41      ...   encoded body (v0x02 bitstream)
+```
+
+---
+
+## Compression Performance
+
+| Data Type | Size | Compressed | Ratio | Notes |
+|-----------|------|-----------|-------|-------|
+| Arithmetic sequence | 400 KB | ~39 B | ~0.0001 | 4 ARITH_RUN tokens |
+| Repetitive (step=0) | 100 KB | ~19 B | ~0.0002 | 2 ARITH_RUN tokens |
+| Text-like | 300 KB | ~280 KB | ~0.93 | Mostly literals |
+| Uniform random | 500 KB | ~563 KB | ~1.13 | Expected overhead |
+
 ---
 
 ## Invariants
 
 - **8-bit masking** — all results masked to `0xFF`
-- **Round-trip guarantee** — `decode(encode(data)) == data` for both v0x01 and v0x02
+- **Round-trip guarantee** — `decode(encode(data)) == data` for v0x01, v0x02, v0x03
 - **Prefix-free flags** (v0x01) — `0` / `10` / `110` satisfies Kraft inequality
-- **Cycle table limit** — max 255 cycles (8-bit count field)
+- **Snapshot immutability** — `FileSnapshotStore.publish()` never overwrites an existing snapshot; same content → same ID (content-addressed dedup)
 - **Div/Mod(0) excluded** — never registered in OperatorLibrary
 - **ARITH_RUN runs split at 65535** — 16-bit length field limit
 
@@ -289,17 +207,22 @@ SuperfunctionOperator: Iterated=64  FixedPointReach=65  Conjugate=66
 | 5 | GraphProfiler, DOT export | — | ✅ |
 | 6a | v0x02 arithmetic run codec | 4 | ✅ |
 | P2-1 | Extended operator space (Levels 1–3) | 27 | ✅ |
-| P2-2 | Evolutionary edge-finder | — | 🔜 |
-| P2-3 | Snapshot protocol | — | 🔜 |
+| P2-2 | Evolutionary edge-finder GA | 59 | ✅ |
+| P2-3 | Snapshot serialization protocol | 15 | ✅ |
+| P3-A | Maven multi-module restructure (9 modules) | — | ✅ |
+| P3-B | Content-addressed snapshot DB | 10 | ✅ |
+| P3-C | HTTP selector service | 13 | ✅ |
+| P3-D | v0x03 snapshot-aware codec | 11 | ✅ |
+| P3-E | GA engine service + health endpoint | 7 | ✅ |
 
-**Total: 38 source files, 78 tests**
+**Total: 193 tests, 0 failures**
 
 ---
 
 ## Requirements
 
-Java 21, Maven 3.8+. Maven handles `--enable-preview` for pattern matching.
+Java 21, Maven 3.8+. No external runtime dependencies — only JDK built-ins (virtual threads, `com.sun.net.httpserver`).
 
 ```bash
-mvn clean test   # build + all 78 tests
+mvn clean test   # build + all 193 tests
 ```

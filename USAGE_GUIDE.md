@@ -7,7 +7,8 @@
 3. [Advanced Usage](#advanced-usage)
 4. [Performance Tuning](#performance-tuning)
 5. [API Reference](#api-reference)
-6. [Troubleshooting](#troubleshooting)
+6. [Distributed Platform (Phase 3)](#distributed-platform-phase-3)
+7. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -638,6 +639,196 @@ public class CompletePipeline {
         System.out.println("✓ Round-trip successful");
     }
 }
+```
+
+---
+
+## Distributed Platform (Phase 3)
+
+### Snapshot Store (mrc-snapshot-db)
+
+```java
+import mrc.snapshotdb.*;
+import java.nio.file.*;
+
+// Open (or create) a content-addressed store
+SnapshotStore store = new FileSnapshotStore(Path.of("/var/mrc/snapshots"));
+
+// Publish a snapshot file → returns 64-char hex SHA-256 ID
+String id = store.publish(Path.of("my.snap"));
+System.out.println("Published: " + id);   // "a3f7...64 chars..."
+
+// Check existence
+boolean found = store.exists(id);         // true
+
+// Load back
+Path snap = store.load(id);              // throws SnapshotNotFoundException if missing
+
+// List all snapshots for a domain
+List<String> audioIds = store.listByDomain("audio-v3");
+```
+
+**Immutability**: publishing the same file twice returns the same ID; only one `.snap` file is ever written.
+
+---
+
+### v0x03 Snapshot-Aware Codec (mrc-codec-v3)
+
+#### Connected mode (snapshot fetched from store at decode time)
+
+```java
+import mrc.codec.v3.*;
+import mrc.snapshotdb.*;
+
+SnapshotStore store = new FileSnapshotStore(Path.of("/var/mrc/snapshots"));
+String snapshotId = "a3f7...";   // obtained from GA service or selector
+
+// Encode
+SnapshotAwareEncoder enc = new SnapshotAwareEncoder();
+byte[] compressed = enc.encodeConnected(inputData, snapshotId, store);
+
+// Decode (any node with access to the same store)
+SnapshotAwareDecoder dec = new SnapshotAwareDecoder();
+byte[] restored = dec.decodeConnected(compressed, store);
+assert Arrays.equals(inputData, restored);
+```
+
+#### Standalone mode (snapshot embedded in compressed bytes)
+
+```java
+// Encode with embedded snapshot — no store needed to decode
+byte[] compressed = enc.encodeStandalone(inputData, snapshotId, store);
+
+// Decode with no store dependency
+byte[] restored = dec.decodeStandalone(compressed);
+assert Arrays.equals(inputData, restored);
+```
+
+#### Inspect a compressed stream
+
+```java
+// Extract snapshot ID without full decode
+String id = dec.readSnapshotId(compressed);   // 64-char hex string
+```
+
+---
+
+### Selector Service (mrc-selector)
+
+#### Start the selector server
+
+```java
+import mrc.selector.*;
+import mrc.snapshotdb.*;
+
+SnapshotStore store = new FileSnapshotStore(Path.of("/var/mrc/snapshots"));
+SelectorServer server = SelectorServer.start(8081, store);
+System.out.println("Selector running on port " + server.port());
+// server.stop();  // graceful shutdown
+```
+
+Or via CLI (SelectorServerMain — see README):
+```bash
+curl -X POST http://localhost:8081/select \
+     --data-binary @sample.bin \
+     -H "Content-Type: application/octet-stream"
+# {"snapshot_id":"a3f7...","score":0.87,"domain":"audio-v3"}
+```
+
+#### Rank snapshots programmatically
+
+```java
+import mrc.selector.*;
+
+// Compute fingerprint of a sample
+DataFingerprint fp = DataFingerprint.of(sampleBytes);
+
+// Rank a list of candidate IDs against the sample
+SnapshotRanker ranker = new SnapshotRanker();
+List<SnapshotRanker.RankedSnapshot> ranked =
+    ranker.rank(sampleBytes, List.of(id1, id2, id3), store);
+
+ranked.forEach(r ->
+    System.out.printf("%s  score=%.3f  domain=%s%n",
+        r.snapshotId(), r.score(), r.domainTag()));
+```
+
+---
+
+### GA Engine Service (mrc-ga-service)
+
+#### Start from CLI
+
+```bash
+java -cp mrc-ga-service/target/mrc-ga-service-1.0.0-SNAPSHOT.jar \
+     mrc.gaservice.GaServiceMain \
+     --store-path /var/mrc/snapshots \
+     --domain audio-v3 \
+     --max-generations 1000 \
+     --snapshot-every 50 \
+     --health-port 8080
+```
+
+Snapshot IDs are printed to stdout as they are published:
+```
+Health endpoint: http://localhost:8080/health
+snapshot_id=a3f7...  gen=50
+snapshot_id=bb01...  gen=100
+...
+GA service completed.
+```
+
+#### Health endpoint
+```bash
+curl http://localhost:8080/health
+# {"status":"running","generation":120,"best_fitness":0.871234}
+```
+
+#### Embed in a Java application
+
+```java
+import mrc.gaservice.*;
+import mrc.snapshotdb.*;
+import mrc.evolution.*;
+import mrc.core.extended.ExtendedOperatorLibrary;
+import mrc.graph.TransitionGraph;
+
+SnapshotStore store = new FileSnapshotStore(Path.of("/tmp/snaps"));
+ExtendedOperatorLibrary lib = ExtendedOperatorLibrary.getInstance();
+EvolutionConfig config = EvolutionConfig.fastConfig(Path.of("/tmp/snaps/tmp"));
+EvolutionaryEdgeFinder finder = new EvolutionaryEdgeFinder(
+    config, lib, new TransitionGraph(), null);
+
+finder.feedData(myData);
+Thread.ofVirtual().start(finder);
+
+// Wait a few generations, then publish
+Thread.sleep(500);
+String id = GaServiceMain.publishSnapshot(finder, lib, store, "my-domain", 1);
+System.out.println("Published: " + id);
+finder.stop();
+```
+
+---
+
+### End-to-End Distributed Workflow
+
+```
+[1] Run GA service on a dedicated node
+    → publishes snapshots to shared store every N generations
+    → prints snapshot IDs to stdout
+
+[2] Run selector service pointing at same store
+    → POST /select with a representative sample of your data
+    → returns the best snapshot_id for that domain
+
+[3] Encode with v0x03 connected codec
+    → SnapshotAwareEncoder.encodeConnected(data, snapshotId, store)
+    → write compressed bytes anywhere
+
+[4] Decode on any node with store access
+    → SnapshotAwareDecoder.decodeConnected(compressed, store)
+    → OR use standalone mode to embed snapshot in compressed stream
 ```
 
 ---

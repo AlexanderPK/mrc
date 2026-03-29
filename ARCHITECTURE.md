@@ -2,17 +2,87 @@
 
 ## Table of Contents
 
-1. [System Overview](#system-overview)
-2. [Core Module (mrc/core/)](#core-module-mrccore)
-3. [Graph Module (mrc/graph/)](#graph-module-mrcgraph)
-4. [Codec Module (mrc/codec/)](#codec-module-mrccodec)
-5. [Evolution Module (mrc/evolution/)](#evolution-module-mrcevolution)
-6. [Snapshot Module (mrc/snapshot/)](#snapshot-module-mrcsnapshot)
-7. [Data Flow](#data-flow)
+1. [Distributed Platform Overview](#distributed-platform-overview)
+2. [Maven Module Layout](#maven-module-layout)
+3. [Core Module (mrc-core)](#core-module-mrc-core)
+4. [Graph Module (mrc-graph)](#graph-module-mrc-graph)
+5. [Codec Module (mrc-codec)](#codec-module-mrc-codec)
+6. [Evolution Module (mrc-evolution)](#evolution-module-mrc-evolution)
+7. [Snapshot Module (mrc-snapshot)](#snapshot-module-mrc-snapshot)
+8. [Snapshot DB Module (mrc-snapshot-db)](#snapshot-db-module-mrc-snapshot-db)
+9. [Codec V3 Module (mrc-codec-v3)](#codec-v3-module-mrc-codec-v3)
+10. [Selector Module (mrc-selector)](#selector-module-mrc-selector)
+11. [GA Service Module (mrc-ga-service)](#ga-service-module-mrc-ga-service)
+12. [Data Flow](#data-flow)
+13. [Design Principles](#design-principles)
 
 ---
 
-## System Overview
+## Distributed Platform Overview
+
+MRC is structured as four independently deployable units:
+
+```
+┌──────────────────────┐        ┌─────────────────────┐
+│   GA Engine Service  │──────▶│   Snapshot DB        │
+│   (mrc-ga-service)   │ write  │   (mrc-snapshot-db)  │
+│                      │        │   SHA-256 keyed,     │
+│  Runs continuously,  │        │   immutable files    │
+│  evolves operator    │        │                      │
+│  rule sets, snaps    │        └──────────┬──────────┘
+│  periodically        │                   │ read (by ID)
+└──────────────────────┘                   │
+                                           ▼
+┌──────────────────────┐        ┌─────────────────────┐
+│   Codec Library      │◀──────│   Selector Service   │
+│   (mrc-codec-v3)     │ snap   │   (mrc-selector)     │
+│                      │  id    │                      │
+│  Stateless encode/   │        │  HTTP: POST /select  │
+│  decode. Loads snap  │        │  body: K-byte sample │
+│  by ID from DB.      │        │  returns: snap_id    │
+└──────────────────────┘        └─────────────────────┘
+```
+
+**Key architectural invariant**: The GA engine and the codec are decoupled by the snapshot store.
+The GA never talks to the codec; the codec never talks to the GA. The snapshot is the only contract between them.
+
+---
+
+## Maven Module Layout
+
+```
+mrc-phase1/                     ← root aggregator POM
+├── mrc-core/                   ← Operator algebra, OpIdMap, OperatorLibrary, ExtendedOperatorLibrary
+├── mrc-graph/                  ← TransitionGraph, CycleDetector, SequenceDetector, GraphProfiler
+├── mrc-codec/                  ← MrcEncoder (v0x01/v0x02), MrcDecoder, CompressionResult
+├── mrc-evolution/              ← Chromosome, GA classes (ChromosomeFactory, EvolutionaryEdgeFinder, etc.)
+├── mrc-snapshot/               ← Snapshot serialization protocol: SnapshotSerializer, SnapshotDeserializer
+├── mrc-snapshot-db/            ← Content-addressed FS store (SHA-256 keyed), SnapshotIndex
+├── mrc-codec-v3/               ← Snapshot-aware v0x03 encoder/decoder, V3Header
+├── mrc-selector/               ← HTTP selector service: DataFingerprint, SnapshotRanker, SelectorServer
+└── mrc-ga-service/             ← GA loop service: GaServiceMain, HealthServer
+```
+
+**Dependency graph** (no cycles):
+```
+mrc-core
+  └─ mrc-graph
+       └─ mrc-codec ──────────────────────────────────────────┐
+             └─ mrc-evolution                                  │
+                   └─ mrc-snapshot                            │
+                         └─ mrc-snapshot-db                   │
+                               ├─ mrc-codec-v3 ←──────────────┘
+                               ├─ mrc-selector (also ← mrc-codec)
+                               └─ mrc-ga-service (also ← mrc-evolution, mrc-snapshot)
+```
+
+**Dependency cycle resolution**: `mrc-evolution` depends on `mrc-codec` (FitnessEvaluator uses MrcEncoder).
+This prevents `mrc-codec` from depending on `mrc-snapshot` (cycle: codec→snapshot→evolution→codec).
+Solution: `mrc-codec-v3` is a separate module that depends on both `mrc-codec` and `mrc-snapshot-db` from above.
+
+---
+
+## System Overview (single-node embedded use)
 
 ```
 ┌───────────────────────────────────────────────────────────┐
@@ -35,6 +105,9 @@
 │                 ┌────────────────────────────────┐ │      │
 │                 ├─ v0x02: Arithmetic-run (simple)├─┤      │
 │                 └────────────────────────────────┘ │      │
+│                 ┌────────────────────────────────┐ │      │
+│                 ├─ v0x03: Snapshot-aware         ├─┤      │
+│                 └────────────────────────────────┘ │      │
 │                                                    ↓      │
 │                            [Snapshots] ← [Serialization]  │
 │                                   ↓                       │
@@ -45,7 +118,7 @@
 
 ---
 
-## Core Module (mrc/core/)
+## Core Module (mrc-core)
 
 ### Operator Interface & Implementations
 
@@ -141,7 +214,7 @@ ARITH_RUN break-even = 4 elements (33 bits vs 36 bits literal)
 
 ---
 
-## Graph Module (mrc/graph/)
+## Graph Module (mrc-graph)
 
 ### TransitionGraph: Directed Multigraph
 
@@ -271,7 +344,7 @@ for i = 0 to n-2:
 
 ---
 
-## Codec Module (mrc/codec/)
+## Codec Module (mrc-codec)
 
 ### BitStreamReader / BitStreamWriter
 
@@ -408,7 +481,7 @@ while pos < originalLength and hasMore():
 
 ---
 
-## Evolution Module (mrc/evolution/)
+## Evolution Module (mrc-evolution)
 
 ### Chromosome & Operator Rules
 
@@ -589,7 +662,7 @@ Chromosome best = finder.getCurrentBest();  // Lock-free read
 
 ---
 
-## Snapshot Module (mrc/snapshot/)
+## Snapshot Module (mrc-snapshot)
 
 ### SnapshotVersion & SnapshotManifest
 
@@ -663,6 +736,150 @@ Evolution Thread          Scheduler Thread
 - `start()` — Spawn scheduler thread
 - `requestSnapshot()` — Queue async write
 - `stop()` — Graceful shutdown with drain
+
+---
+
+## Snapshot DB Module (mrc-snapshot-db)
+
+### SnapshotStore Interface
+
+```java
+public interface SnapshotStore {
+    String publish(Path snapshotFile) throws IOException;   // returns hex SHA-256 id
+    Path load(String snapshotId) throws IOException;         // throws SnapshotNotFoundException if missing
+    List<String> listByDomain(String domainTag);             // empty list if none
+    boolean exists(String snapshotId);
+}
+```
+
+### FileSnapshotStore: Content-Addressed Storage
+
+**ID computation**: `HexFormat.of().formatHex(SHA-256(fileBytes))` — 64-hex-char string.
+
+**File layout**:
+```
+<store-root>/
+├── a3/
+│   └── a3f7...64hexchars....snap
+├── bb/
+│   └── bb01...64hexchars....snap
+└── index.txt          ← tab-delimited: <id>\t<domain>
+```
+
+**Immutability guarantee**: `publish()` checks `exists(id)` before writing. Same content → same ID → one file on disk. Never overwrites.
+
+**Atomic write**: Writes to a temp file, then `Files.move(..., ATOMIC_MOVE, REPLACE_EXISTING)`.
+
+### SnapshotIndex: Domain Lookup
+
+- In-memory `ConcurrentHashMap<String, List<String>>` domain→IDs + reverse id→domain map
+- Persisted to `<store-root>/index.txt` as append-only tab-delimited lines
+- Loaded fully on construction; re-read is not needed (append-only + immutable entries)
+
+---
+
+## Codec V3 Module (mrc-codec-v3)
+
+**Why a separate module?** `mrc-evolution` depends on `mrc-codec` (FitnessEvaluator uses MrcEncoder).
+If `mrc-codec` depended on `mrc-snapshot`, a cycle would form: `codec→snapshot→evolution→codec`.
+Creating `mrc-codec-v3` as a sibling that depends on `mrc-codec` + `mrc-snapshot-db` breaks the cycle.
+
+### V3Header (41 bytes fixed)
+
+```
+Offset  Size  Field
+0       4     magic = 0x4D 0x52 0x43 0x33  ("MRC3")
+4       1     mode  (0x00=standalone, 0x01=connected)
+5       32    snapshot_id (SHA-256 raw bytes)
+37      4     body_length (big-endian)
+41      ...   encoded body (v0x02 bitstream)
+```
+
+**Standalone mode** (0x00): After the 41-byte header, a 4-byte length prefix followed by the full embedded snapshot bytes. Decodes without store access.
+
+**Connected mode** (0x01): After the 41-byte header, the body begins immediately. Decoder fetches the snapshot by ID from a `SnapshotStore`.
+
+### SnapshotAwareEncoder
+
+1. Load snapshot from store → `SnapshotDeserializer` → `Chromosome`
+2. Apply chromosome rules to `TransitionGraph` via `graph.setEdge(from, to, operator)`
+3. Detect arithmetic runs with `SequenceDetector`
+4. Encode with `MrcEncoder` (v0x02 bitstream)
+5. Prepend `V3Header`
+
+### SnapshotAwareDecoder
+
+1. Parse `V3Header` from compressed bytes
+2. Standalone: extract embedded snapshot bytes → temp file; Connected: fetch from store by ID
+3. `SnapshotDeserializer` → `Chromosome`
+4. Reconstruct `TransitionGraph` from chromosome rules
+5. Decode body with `MrcDecoder`
+
+---
+
+## Selector Module (mrc-selector)
+
+### DataFingerprint
+
+12-element `double[]` feature vector computed from a byte sample:
+
+| Index | Feature | Description |
+|-------|---------|-------------|
+| 0 | entropy/8 | Shannon entropy normalized to [0,1] |
+| 1 | arith-run density | fraction of bytes covered by arithmetic runs |
+| 2 | cycle density | fraction of consecutive pairs in repeating patterns (window=8) |
+| 3–10 | delta histogram | 8 buckets of width 32 for absolute deltas `\|b[i+1]-b[i]\|` |
+| 11 | avg delta / 255 | mean absolute delta normalized to [0,1] |
+
+**Similarity**: Cosine similarity between two fingerprints.
+
+### SnapshotRanker
+
+```java
+public record RankedSnapshot(String snapshotId, double score, String domainTag) {}
+
+List<RankedSnapshot> rank(byte[] sample, List<String> candidateIds, SnapshotStore store)
+```
+
+1. Compute `DataFingerprint.of(sample)`
+2. For each candidate: load manifest, derive domain-based synthetic fingerprint via keyword heuristics
+3. Compute cosine similarity
+4. Return sorted by descending score
+
+### SelectorServer
+
+- `POST /select` — body: raw bytes → response: `{"snapshot_id":"...","score":0.87,"domain":"..."}`
+- `GET /health` — response: `{"status":"ok"}`
+- No external framework: JDK `com.sun.net.httpserver.HttpServer` + `Executors.newVirtualThreadPerTaskExecutor()`
+- Returns 404 `{"error":"no_snapshots_available"}` when store is empty
+
+---
+
+## GA Service Module (mrc-ga-service)
+
+### GaServiceMain
+
+CLI entry point:
+```
+--store-path     <dir>   path to snapshot store directory (required)
+--domain         <tag>   domain tag for published snapshots
+--max-generations <n>    stop after N generations (0 = run forever)
+--snapshot-every  <n>    publish snapshot every N generations (default: 10)
+--health-port    <port>  HTTP health endpoint port (default: 8080, 0 = disabled)
+```
+
+**Threading model** (virtual threads throughout):
+- GA evolution: `Thread.ofVirtual().name("ga-evolution").start(finder)`
+- Snapshot monitoring loop: `Thread.ofVirtual().name("ga-main").start(...)`
+- Health endpoint: `Executors.newVirtualThreadPerTaskExecutor()` per request
+
+**OpIdMap filter**: `publishSnapshot()` filters chromosome rules to only operators registered in `OpIdMap` before serializing. `ExtendedOperatorLibrary` may produce `FunctionOperator` subtypes (RotateLeft, DeltaOfDelta, etc.) with opIds not in the base map; these are silently dropped at publish time.
+
+### HealthServer
+
+- `GET /health` → `{"status":"running","generation":<n>,"best_fitness":<f>}`
+- Non-GET → 405 `{"error":"method_not_allowed"}`
+- Status supplier called on each request (live data, not cached)
 
 ---
 
