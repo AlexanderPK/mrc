@@ -232,14 +232,34 @@ public class MrcEncoder {
     }
 
     private boolean tryRelational(BitStreamWriter writer, int from, int to) {
-        Optional<Operator> optOp = lib.findShortest(from, to);
-        if (optOp.isPresent()) {
-            Operator op = optOp.get();
-            int cost = 5 + op.operandBits();
-            if (cost < 8) {
-                writeRelationalToken(writer, op);
-                return true;
+        // Check graph edge first (chromosome-assigned operator), then fall back to library default
+        Operator bestOp = null;
+        int bestCost = Integer.MAX_VALUE;
+
+        if (graph != null) {
+            Optional<TransitionEdge> graphEdge = graph.bestEdge(from, to);
+            if (graphEdge.isPresent()) {
+                Operator op = graphEdge.get().op();
+                int cost = 5 + op.operandBits();
+                if (cost < bestCost) {
+                    bestCost = cost;
+                    bestOp = op;
+                }
             }
+        }
+
+        Optional<Operator> libOp = lib.findShortest(from, to);
+        if (libOp.isPresent()) {
+            int cost = 5 + libOp.get().operandBits();
+            if (cost < bestCost) {
+                bestCost = cost;
+                bestOp = libOp.get();
+            }
+        }
+
+        if (bestOp != null && bestCost < 8) {
+            writeRelationalToken(writer, bestOp);
+            return true;
         }
         return false;
     }
@@ -273,8 +293,11 @@ public class MrcEncoder {
             case OrOp o   -> o.operand();
             case ShiftLeft sl  -> sl.bits();
             case ShiftRight sr -> sr.bits();
-            case Not n    -> 0;
-            default       -> 0;
+            case Not n      -> 0;
+            case Inc i      -> 0;
+            case Dec d      -> 0;
+            case Identity id -> 0;
+            default         -> 0;
         };
     }
 

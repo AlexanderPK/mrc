@@ -26,6 +26,9 @@ public class OpIdMap {
         TYPE_TO_ID.put(ShiftLeft.class, (byte) 8);
         TYPE_TO_ID.put(ShiftRight.class, (byte) 9);
         TYPE_TO_ID.put(Not.class, (byte) 10);
+        TYPE_TO_ID.put(Inc.class, (byte) 11);
+        TYPE_TO_ID.put(Dec.class, (byte) 12);
+        TYPE_TO_ID.put(Identity.class, (byte) 13);
     }
 
     /**
@@ -75,6 +78,9 @@ public class OpIdMap {
             case 8 -> "ShiftLeft";
             case 9 -> "ShiftRight";
             case 10 -> "Not";
+            case 11 -> "Inc";
+            case 12 -> "Dec";
+            case 13 -> "Identity";
             default -> "Unknown(" + opId + ")";
         };
     }
@@ -90,6 +96,9 @@ public class OpIdMap {
             case 0, 1, 2, 3, 4, 5, 6, 7 -> 8;  // Add through OrOp
             case 8, 9 -> 3;                      // Shift operators
             case 10 -> 0;                        // Not (unary)
+            case 11 -> 0;                        // Inc (unary)
+            case 12 -> 0;                        // Dec (unary)
+            case 13 -> 0;                        // Identity (unary)
             default -> throw new IllegalArgumentException("Unknown opId: " + opId);
         };
     }

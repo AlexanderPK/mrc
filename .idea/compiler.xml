@@ -6,7 +6,15 @@
         <sourceOutputDir name="target/generated-sources/annotations" />
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
-        <module name="mrc-phase1" />
+        <module name="mrc-ga-service" />
+        <module name="mrc-snapshot-db" />
+        <module name="mrc-core" />
+        <module name="mrc-selector" />
+        <module name="mrc-codec-v3" />
+        <module name="mrc-graph" />
+        <module name="mrc-codec" />
+        <module name="mrc-snapshot" />
+        <module name="mrc-evolution" />
       </profile>
     </annotationProcessing>
   </component>

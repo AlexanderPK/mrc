@@ -32,7 +32,7 @@ public class ChromosomeFactory {
 
             if (!seenPairs.contains(pair)) {
                 seenPairs.add(pair);
-                Optional<Operator> optOp = lib.findShortestExtended(from, to);
+                Optional<Operator> optOp = lib.findShortest(from, to);
                 if (optOp.isPresent()) {
                     rules.add(new Chromosome.OperatorRule(from, to, optOp.get()));
                 }
@@ -54,7 +54,7 @@ public class ChromosomeFactory {
         // For now, we'll use a simple heuristic: iterate through possible transitions
         for (int from = 0; from < 256 && rules.size() < topK; from++) {
             for (int to = 0; to < 256 && rules.size() < topK; to++) {
-                Optional<Operator> optOp = lib.findShortestExtended(from, to);
+                Optional<Operator> optOp = lib.findShortest(from, to);
                 if (optOp.isPresent()) {
                     rules.add(new Chromosome.OperatorRule(from, to, optOp.get()));
                 }
@@ -88,7 +88,7 @@ public class ChromosomeFactory {
                 repaired.add(rule);
             } else {
                 // Find a valid replacement operator
-                Optional<Operator> optOp = lib.findShortestExtended(rule.fromValue(), rule.toValue());
+                Optional<Operator> optOp = lib.findShortest(rule.fromValue(), rule.toValue());
                 if (optOp.isPresent()) {
                     repaired.add(new Chromosome.OperatorRule(rule.fromValue(), rule.toValue(), optOp.get()));
                 }

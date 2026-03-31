@@ -1,6 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="Encoding">
+    <file url="file://$PROJECT_DIR$/mrc-codec-v3/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-codec-v3/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-codec/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-codec/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-core/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-core/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-evolution/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-evolution/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-ga-service/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-ga-service/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-graph/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-graph/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-selector/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-selector/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-snapshot-db/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-snapshot-db/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-snapshot/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/mrc-snapshot/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/src/main/java" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/src/main/resources" charset="UTF-8" />
   </component>

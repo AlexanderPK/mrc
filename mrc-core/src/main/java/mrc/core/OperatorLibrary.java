@@ -119,8 +119,12 @@ public class OperatorLibrary {
         }
 
         // Add the single Not operator
-        Not op = new Not();
-        registerOperator(op);
+        registerOperator(new Not());
+
+        // Add compact 0-operand operators (7-bit tokens, cheaper than 9-bit literals)
+        registerOperator(new Inc());
+        registerOperator(new Dec());
+        registerOperator(new Identity());
     }
 
     /**
@@ -168,6 +172,9 @@ public class OperatorLibrary {
             case 8 -> new ShiftLeft(operand);
             case 9 -> new ShiftRight(operand);
             case 10 -> new Not();
+            case 11 -> new Inc();
+            case 12 -> new Dec();
+            case 13 -> new Identity();
             default -> throw new IllegalArgumentException("Unknown opId: " + opId);
         };
     }

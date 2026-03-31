@@ -215,6 +215,20 @@ public class EvolutionaryEdgeFinder implements Runnable {
     }
 
     /**
+     * Expose MutationEngine so the adaptive controller can tune rates at runtime.
+     */
+    public MutationEngine getMutationEngine() {
+        return mutationEngine;
+    }
+
+    /**
+     * Expose EvolutionConfig for inspection.
+     */
+    public EvolutionConfig getConfig() {
+        return config;
+    }
+
+    /**
      * Get the last generation result.
      */
     public GenerationResult getLastGenerationResult() {

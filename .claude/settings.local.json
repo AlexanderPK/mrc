@@ -2,7 +2,22 @@
   "permissions": {
     "allow": [
       "Bash(mvn clean:*)",
-      "Bash(mvn test:*)"
+      "Bash(mvn test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(cd:*)",
+      "Bash(grep -h \"^import mrc\\\\.\" C:/DEV/_WS_/mrc-phase1/src/main/java/mrc/snapshot/*.java)",
+      "Bash(grep -h \"^import mrc\\\\.\" C:/DEV/_WS_/mrc-phase1/src/main/java/mrc/evolution/*.java)",
+      "Bash(grep -h \"^import mrc\\\\.\" C:/DEV/_WS_/mrc-phase1/src/test/java/mrc/evolution/*.java)",
+      "Bash(cp -r C:/DEV/_WS_/mrc-phase1/mrc-codec/src/main/java/mrc/codec/v3/* C:/DEV/_WS_/mrc-phase1/mrc-codec-v3/src/main/java/mrc/codec/v3/)",
+      "Bash(cp -r C:/DEV/_WS_/mrc-phase1/mrc-codec/src/test/java/mrc/codec/v3/* C:/DEV/_WS_/mrc-phase1/mrc-codec-v3/src/test/java/mrc/codec/v3/)",
+      "Bash(grep -E \"Failed to execute|ERROR\\\\s*$|FAILURE\")",
+      "Bash(mvn package:*)",
+      "Bash(ls C:DEV_WS_mrc-phase1mrc-ga-servicetarget*.jar)",
+      "Bash(ls C:/DEV/_WS_/mrc-phase1/mrc-ga-service/target/*.jar)",
+      "Bash(mvn dependency:build-classpath -pl mrc-ga-service -q -DincludeTypes=jar -Dmdep.outputFile=/tmp/ga-cp.txt)",
+      "Bash(mvn install:*)",
+      "Bash(mvn dependency:build-classpath -pl mrc-ga-service -Dmdep.outputFile=C:/DEV/_WS_/mrc-phase1/ga-run/cp.txt -q)"
     ]
   }
 }

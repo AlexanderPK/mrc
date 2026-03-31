@@ -15,10 +15,34 @@ public class MutationEngine {
     private final ExtendedOperatorLibrary lib;
     private final Random rng;
 
+    // Runtime overrides — set to NaN to fall back to config values
+    private volatile double ruleMutationProbOverride = Double.NaN;
+    private volatile double chromosomeMutationProbOverride = Double.NaN;
+
     public MutationEngine(EvolutionConfig config, ExtendedOperatorLibrary lib, Random rng) {
         this.config = config;
         this.lib = lib;
         this.rng = rng;
+    }
+
+    /** Override rule mutation probability at runtime (for adaptive control). */
+    public void setRuleMutationProb(double prob) {
+        this.ruleMutationProbOverride = Math.max(0.0, Math.min(1.0, prob));
+    }
+
+    /** Override chromosome-level mutation probability at runtime. */
+    public void setChromosomeMutationProb(double prob) {
+        this.chromosomeMutationProbOverride = Math.max(0.0, Math.min(1.0, prob));
+    }
+
+    /** Current effective rule mutation probability. */
+    public double effectiveRuleMutationProb() {
+        return Double.isNaN(ruleMutationProbOverride) ? config.ruleMutationProb() : ruleMutationProbOverride;
+    }
+
+    /** Current effective chromosome mutation probability. */
+    public double effectiveChromosomeMutationProb() {
+        return Double.isNaN(chromosomeMutationProbOverride) ? config.chromosomeMutationProb() : chromosomeMutationProbOverride;
     }
 
     /**
@@ -30,9 +54,9 @@ public class MutationEngine {
 
         // RULE_REPLACE: replace operator in a random rule
         for (int i = 0; i < rules.size(); i++) {
-            if (rng.nextDouble() < config.ruleMutationProb()) {
+            if (rng.nextDouble() < effectiveRuleMutationProb()) {
                 Chromosome.OperatorRule oldRule = rules.get(i);
-                Optional<Operator> optOp = lib.findShortestExtended(oldRule.fromValue(), oldRule.toValue());
+                Optional<Operator> optOp = lib.findShortest(oldRule.fromValue(), oldRule.toValue());
                 if (optOp.isPresent()) {
                     rules.set(i, new Chromosome.OperatorRule(
                             oldRule.fromValue(),
@@ -44,10 +68,10 @@ public class MutationEngine {
         }
 
         // RULE_ADD: add a new random rule
-        if (rng.nextDouble() < config.chromosomeMutationProb() && rules.size() < config.maxChromosomeRules()) {
+        if (rng.nextDouble() < effectiveChromosomeMutationProb() && rules.size() < config.maxChromosomeRules()) {
             int from = rng.nextInt(256);
             int to = rng.nextInt(256);
-            Optional<Operator> optOp = lib.findShortestExtended(from, to);
+            Optional<Operator> optOp = lib.findShortest(from, to);
             if (optOp.isPresent() && !rules.stream().anyMatch(r ->
                     r.fromValue() == from && r.toValue() == to)) {
                 rules.add(new Chromosome.OperatorRule(from, to, optOp.get()));
@@ -55,7 +79,7 @@ public class MutationEngine {
         }
 
         // RULE_REMOVE: remove a rule (only if more than 1)
-        if (rules.size() > 1 && rng.nextDouble() < config.ruleMutationProb() * 0.5) {
+        if (rules.size() > 1 && rng.nextDouble() < effectiveRuleMutationProb() * 0.5) {
             rules.remove(rng.nextInt(rules.size()));
         }
 

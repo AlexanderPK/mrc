@@ -161,8 +161,8 @@ public class TransitionGraphTest {
 
     @Test
     public void testExportDotOnlyPositiveWeightEdges(@TempDir Path tmp) throws IOException {
-        // All same-value transitions (5->5) use Add(0) which costs 13 bits — not compressing
-        // so weight = freq * (8 - 13) < 0 and should be excluded
+        // With Identity operator (opId 13, 0 operand bits), x→x transitions cost only 7 bits
+        // vs 9-bit literal — so self-loops ARE compressing and should appear in the DOT export.
         byte[] data = {5, 5, 5, 5, 5};
         TransitionGraph graph = new TransitionGraph();
         graph.observe(data);
@@ -171,8 +171,8 @@ public class TransitionGraphTest {
         graph.exportDot(dotFile);
 
         String content = Files.readString(dotFile);
-        // Negative-weight edge should not appear
-        assertFalse(content.contains("->"), "Non-compressing self-loop should be excluded");
+        // Self-loop is now compressing (Identity saves 2 bits per transition)
+        assertTrue(content.contains("->"), "Compressing self-loop (via Identity) should appear in DOT export");
     }
 
     @Test
